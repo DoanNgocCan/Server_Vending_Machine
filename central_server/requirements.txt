@@ -1,0 +1,27 @@
+# Central Server Requirements
+# Flask web framework and related packages
+Flask==2.3.3
+Flask-CORS==4.0.0
+
+# Production server
+gunicorn==21.2.0
+
+# Database
+# SQLite is built-in with Python, no additional package needed
+
+# JSON processing (built-in)
+# datetime (built-in)
+# typing (built-in)
+
+# Optional: For enhanced JSON handling
+python-json-logger==2.0.7
+
+# Optional: For API documentation
+flask-restx==1.2.0
+
+# Optional: For testing
+pytest==7.4.3
+requests==2.31.0
+
+# Optional: For monitoring
+psutil==5.9.6 

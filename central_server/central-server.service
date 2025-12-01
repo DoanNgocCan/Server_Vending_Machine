@@ -1,0 +1,24 @@
+[Unit]
+Description=Central Server Flask App
+After=network.target
+
+[Service]
+User=pi
+WorkingDirectory=/home/pi/Desktop/SERVER/icc-25-cdpd-uit/central_server
+ExecStart=/usr/bin/python3 app.py
+Restart=always
+
+[Install]
+WantedBy=multi-user.target
+
+
+
+
+
+
+
+
+
+
+
+

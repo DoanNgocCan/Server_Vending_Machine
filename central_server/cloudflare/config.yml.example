@@ -1,0 +1,69 @@
+# Cloudflare Tunnel Configuration Example
+# Copy this file to ~/.cloudflared/config.yml and modify as needed
+
+# Tunnel ID (will be generated automatically)
+tunnel: YOUR_TUNNEL_ID
+
+# Credentials file path (will be generated automatically)
+credentials-file: /home/pi/.cloudflared/YOUR_TUNNEL_ID.json
+
+# Ingress rules - define how traffic is routed
+ingress:
+  # Main domain routing to Central Server
+  - hostname: rpi.yourdomain.com
+    service: http://localhost:5000
+    # Optional: Add headers
+    # originRequest:
+    #   httpHostHeader: rpi.yourdomain.com
+
+  # Optional: Add multiple subdomains
+  # - hostname: api.yourdomain.com
+  #   service: http://localhost:5000
+  #   path: /api/*
+
+  # Optional: Add authentication for admin endpoints
+  # - hostname: admin.yourdomain.com
+  #   service: http://localhost:5000
+  #   path: /admin/*
+
+  # Optional: Static file serving (if you have a web interface)
+  # - hostname: dashboard.yourdomain.com
+  #   service: http://localhost:3000
+
+  # Catch-all rule (required as the last rule)
+  - service: http_status:404
+
+# Optional: Enable metrics endpoint
+# metrics: 0.0.0.0:2000
+
+# Optional: Enable Warp routing (for private networks)
+# warp-routing:
+#   enabled: true
+
+# Optional: Configure logging
+# loglevel: info
+# logfile: /var/log/cloudflared.log
+
+# Optional: Configure retries and timeouts
+# retries: 5
+# no-autoupdate: true
+# grace-period: 30s
+
+# Optional: Configure proxy settings if behind a corporate firewall
+# proxy-address: proxy.company.com:8080
+# proxy-type: socks5
+
+# Optional: Configure TLS settings
+# tls-timeout: 10s
+# tcp-keep-alive: 30s
+# keep-alive-connections: 100
+# keep-alive-timeout: 90s
+
+# Optional: Configure HTTP/2 settings
+# http2-origin: true
+# chunked-encoding: true
+# compression-quality: 0
+
+# Optional: Configure edge locations
+# edge-ip-version: auto
+# region: auto 

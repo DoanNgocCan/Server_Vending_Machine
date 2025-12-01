@@ -1,0 +1,7 @@
+Flask==2.2.2
+flask-cors==3.0.10
+sqlite3==3.36.0
+uuid==1.30.5
+logging==0.6.0
+jsonschema==4.4.0
+threading==3.10.0
