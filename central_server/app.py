@@ -1,4 +1,4 @@
-# --- START OF FILE app.py (TINH GỌN CHO PROJECT MÁY BÁN HÀNG) ---
+# --- START OF FILE app.py (CLEAN VERSION: NO UNITS_LEFT IN MASTER INVENTORY) ---
 
 from flask import Flask, request, jsonify
 from flask_cors import CORS
@@ -10,7 +10,7 @@ import uuid
 import threading
 import logging
 
-# --- CÀI ĐẶT ---
+# --- CẤU HÌNH ---
 logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(message)s")
 logger = logging.getLogger(__name__)
 
@@ -27,10 +27,11 @@ def getDatabaseConnection():
     return conn
 
 def create_tables():
-    """Tạo các bảng CSDL cần thiết cho project."""
+    """Tạo các bảng CSDL cần thiết."""
     with getDatabaseConnection() as conn:
         cursor = conn.cursor()
-        # Bảng users
+        
+        # 1. Bảng users
         cursor.execute("""
             CREATE TABLE IF NOT EXISTS users (
                 user_id TEXT PRIMARY KEY,
@@ -44,21 +45,34 @@ def create_tables():
                 updated_at TEXT NOT NULL
             )
         """)
-        # Bảng products
+
+        # 2. Bảng inventory (MASTER DATA - Đã xóa units_left và reorder_point)
+        # Bảng này chỉ chứa thông tin tĩnh của sản phẩm + tổng số đã bán
         cursor.execute("""
             CREATE TABLE IF NOT EXISTS inventory (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
                 item_name TEXT UNIQUE NOT NULL,
                 price REAL NOT NULL,
                 units_sold INTEGER DEFAULT 0,
-                units_left INTEGER DEFAULT 0,
                 cost_price REAL DEFAULT 0,
-                reorder_point INTEGER DEFAULT 5,
-                description TEXT,
-                slot_number INTEGER -- Giữ lại để mapping với khay hàng vật lý
+                description TEXT
             )
         """)
-        # Bảng transactions
+
+        # 3. Bảng device_inventory (KHO RIÊNG TỪNG MÁY)
+        # Đây là nơi duy nhất lưu trữ tồn kho thực tế (units_left)
+        cursor.execute("""
+            CREATE TABLE IF NOT EXISTS device_inventory (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                device_id TEXT NOT NULL,
+                item_name TEXT NOT NULL,
+                units_left INTEGER DEFAULT 0, 
+                last_updated TEXT,
+                UNIQUE(device_id, item_name)
+            )
+        """)
+
+        # 4. Bảng transactions
         cursor.execute("""
             CREATE TABLE IF NOT EXISTS transactions (
                 transaction_id TEXT PRIMARY KEY,
@@ -72,6 +86,8 @@ def create_tables():
                 paid_at TEXT
             )
         """)
+        
+        # 5. Bảng giá riêng (Custom Price)
         cursor.execute("""
             CREATE TABLE IF NOT EXISTS device_pricing (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -79,37 +95,11 @@ def create_tables():
                 item_name TEXT NOT NULL,
                 custom_price REAL,
                 custom_cost_price REAL,
-                UNIQUE(device_id, item_name) -- Một máy chỉ có 1 giá cho 1 món
+                UNIQUE(device_id, item_name)
             )
         """)
         conn.commit()
-        logger.info("Database tables for Vending Machine checked/created successfully.")
-
-def populate_initial_products():
-    """Chèn dữ liệu sản phẩm mẫu vào bảng inventory."""
-    # Định dạng: (Tên, Giá bán, Giá vốn, Tồn kho)
-    PRODUCT_DATA = [
-    ]
-    
-    with dbLock, getDatabaseConnection() as conn:
-        try:
-            # Kiểm tra bảng inventory có dữ liệu chưa
-            if conn.execute("SELECT COUNT(*) FROM inventory").fetchone()[0] > 0:
-                logger.info("Inventory table already has data, skipping population.")
-                return
-            
-            logger.info("Populating sample inventory...")
-            for index, (name, price, cost, stock) in enumerate(PRODUCT_DATA, start=1):
-                conn.execute("""
-                    INSERT INTO inventory 
-                    (item_name, price, cost_price, units_left, slot_number, description, reorder_point) 
-                    VALUES (?, ?, ?, ?, ?, 'Sản phẩm mẫu', 10)
-                """, (name, price, cost, stock, index))
-            
-            conn.commit()
-            logger.info(f"Successfully inserted {len(PRODUCT_DATA)} items into inventory.")
-        except Exception as e:
-            logger.error(f"Error populating inventory: {e}")
+        logger.info("Database tables checked/created (Clean Version).")
 
 def logSystemEvent(event_type, message, metadata=None):
     logger.info(f"[{event_type.upper()}]: {message} | Metadata: {metadata}")
@@ -120,149 +110,110 @@ def healthCheck():
     return jsonify({'status': 'OK', 'message': 'Vending Machine Central Server is running'})
 
 # =============================================================================
-# ENDPOINTS QUẢN LÝ USER
+# 1. API QUẢN LÝ USER
 # =============================================================================
+
 @app.route('/api/users', methods=['GET'])
 def listUsers():
-    """
-    Lấy danh sách tất cả khách hàng đã đăng ký.
-    Hỗ trợ tìm kiếm và phân trang qua query parameters.
-    - /api/users -> Lấy 20 user đầu tiên.
-    - /api/users?limit=50&offset=50 -> Lấy 50 user, bỏ qua 50 user đầu.
-    - /api/users?search=John -> Tìm user có tên hoặc SĐT chứa "John".
-    """
     try:
-        # Lấy các tham số từ URL, có giá trị mặc định
         limit = int(request.args.get('limit', 20))
         offset = int(request.args.get('offset', 0))
         search = request.args.get('search', None)
         
-        # Đảm bảo limit hợp lệ
-        if limit < 1:
-            limit = 20
-
         with dbLock, getDatabaseConnection() as conn:
-            # Xây dựng câu lệnh query động và an toàn
             base_query = "SELECT user_id, full_name, phone_number, points, birthday, status, created_at FROM users"
             count_query = "SELECT COUNT(*) as total FROM users"
             params = []
 
             if search:
-                search_pattern = f"%{search}%"
                 where_clause = " WHERE (full_name LIKE ? OR phone_number LIKE ?)"
                 base_query += where_clause
                 count_query += where_clause
-                params.extend([search_pattern, search_pattern])
+                params.extend([f"%{search}%", f"%{search}%"])
 
-            # 1. Lấy tổng số bản ghi khớp với tìm kiếm (quan trọng cho phân trang)
             total_records = conn.execute(count_query, params).fetchone()['total']
             
-            # 2. Thêm sắp xếp và phân trang vào câu query chính
             base_query += " ORDER BY created_at DESC LIMIT ? OFFSET ?"
             params.extend([limit, offset])
             
-            # 3. Lấy danh sách user cho trang hiện tại
             users = [dict(row) for row in conn.execute(base_query, params).fetchall()]
 
-        return jsonify({
-            'success': True, 
-            'total': total_records, 
-            'users': users
-        })
+        return jsonify({'success': True, 'total': total_records, 'users': users})
     except Exception as e:
-        logger.error(f"Error in /api/users: {e}", exc_info=True)
-        return jsonify({'success': False, 'message': 'Internal Server Error'}), 500
-
+        logger.error(f"Error /api/users: {e}")
+        return jsonify({'success': False, 'message': str(e)}), 500
 
 @app.route('/api/user/register', methods=['POST'])
 def registerUser():
     try:
         data = request.get_json()
-        
-        # <<< THAY ĐỔI 1: Thêm 'user_id' vào danh sách trường bắt buộc >>>
         required = ['user_id', 'full_name', 'phone_number', 'birthday', 'password']
         if not all(field in data for field in required):
-            return jsonify({'success': False, 'message': 'Missing required fields'}), 400
+            return jsonify({'success': False, 'message': 'Missing fields'}), 400
 
-        # <<< THAY ĐỔI 2: Lấy user_id từ dữ liệu client gửi lên >>>
         user_id = data['user_id']
-        full_name = data['full_name']
-        phone_number = data['phone_number']
-        birthday = data['birthday']
-        password = data['password']
-        
-        # <<< THAY ĐỔI 3: Xóa dòng tự tạo user_id >>>
-        # Dòng này đã được xóa: user_id = f"user_{uuid.uuid4().hex[:8]}"
-        
         now_iso = datetime.now(timezone.utc).isoformat()
         
         with dbLock, getDatabaseConnection() as conn:
             cursor = conn.cursor()
-
-            # <<< CẢI TIẾN: Kiểm tra cả SĐT và user_id tồn tại trước khi INSERT >>>
-            # Điều này giúp trả về thông báo lỗi rõ ràng hơn
-            cursor.execute("SELECT 1 FROM users WHERE phone_number = ?", (phone_number,))
-            if cursor.fetchone():
-                return jsonify({'success': False, 'message': 'Phone number already exists'}), 409
-
-            cursor.execute("SELECT 1 FROM users WHERE user_id = ?", (user_id,))
-            if cursor.fetchone():
-                return jsonify({'success': False, 'message': 'User ID already exists'}), 409
+            if cursor.execute("SELECT 1 FROM users WHERE phone_number = ?", (data['phone_number'],)).fetchone():
+                return jsonify({'success': False, 'message': 'Phone exists'}), 409
+            if cursor.execute("SELECT 1 FROM users WHERE user_id = ?", (user_id,)).fetchone():
+                return jsonify({'success': False, 'message': 'ID exists'}), 409
             
-            # Sử dụng các biến đã lấy từ 'data'
             cursor.execute("""
                 INSERT INTO users (user_id, full_name, phone_number, birthday, password, status, created_at, updated_at)
                 VALUES (?, ?, ?, ?, ?, 'active', ?, ?)
-            """, (user_id, full_name, phone_number, birthday, password, now_iso, now_iso))
-            
-            # conn.commit() sẽ được gọi tự động khi thoát khỏi 'with' block
+            """, (user_id, data['full_name'], data['phone_number'], data['birthday'], data['password'], now_iso, now_iso))
         
-        logSystemEvent('user_registered', f'New user registered: {user_id} from client')
-        # Trả về user_id đã nhận để xác nhận
-        return jsonify({'success': True, 'user_id': user_id, 'message': 'User registered successfully using client-provided ID'})
-
+        logSystemEvent('user_register', f'Registered {user_id}')
+        return jsonify({'success': True, 'user_id': user_id, 'message': 'Success'})
     except Exception as e:
-        logger.error(f"Error in /api/user/register: {e}", exc_info=True)
-        return jsonify({'success': False, 'message': 'Internal Server Error'}), 500
-    
-def calculate_points_earned(amount):
-    """
-    Hàm helper để tính điểm nhận được từ một giao dịch.
-    Quy tắc: 1000 VNĐ = 1 điểm.
-    """
-    return int(amount / 1000)
+        logger.error(f"Error Register: {e}")
+        return jsonify({'success': False}), 500
+
+@app.route('/api/user/login', methods=['POST'])
+def loginUser():
+    data = request.get_json()
+    phone = data.get('phone_number')
+    password = data.get('password')
+    try:
+        with getDatabaseConnection() as conn:
+            user = conn.execute("SELECT * FROM users WHERE phone_number = ?", (phone,)).fetchone()
+            if user and user['password'] == password:
+                return jsonify({'success': True, 'user': dict(user)})
+    except Exception: pass
+    return jsonify({'success': False, 'message': 'Invalid credentials'}), 401
 
 @app.route('/api/user/<string:user_id>', methods=['GET'])
 def get_user_by_id(user_id):
     try:
         with getDatabaseConnection() as conn:
             user = conn.execute("SELECT user_id, full_name, phone_number, points FROM users WHERE user_id = ?", (user_id,)).fetchone()
-        
-        if user:
-            return jsonify({'success': True, 'user': dict(user)})
-        else:
-            return jsonify({'success': False, 'message': 'User not found'}), 404
-    except Exception as e:
-        logger.error(f"Error getting user by ID: {e}")
-        return jsonify({'success': False, 'message': 'Internal Server Error'}), 500
+            if user: return jsonify({'success': True, 'user': dict(user)})
+            return jsonify({'success': False}), 404
+    except Exception: return jsonify({'success': False}), 500
 
 # =============================================================================
-# ENDPOINT QUẢN LÝ SẢN PHẨM
+# 2. API SẢN PHẨM & KHO (ĐÃ SỬA - KHÔNG CÒN UNITS_LEFT TRONG INVENTORY)
 # =============================================================================
 
-# Trong app.py -> thay thế API getProducts cũ
-# Trong app.py (Thêm mới)
 @app.route('/api/products/batch_sync', methods=['POST'])
 def batchSyncProducts():
     """
-    API nhận danh sách sản phẩm từ Client gửi lên để lưu vào DB Server.
+    [FIXED] Đồng bộ sản phẩm:
+    - inventory: CHỈ lưu tên, giá, ảnh. (Đã bỏ units_left)
+    - device_inventory: Lưu tồn kho của máy.
     """
     try:
         data = request.get_json()
+        device_id = request.headers.get('X-Device-ID') or data.get('products', [{}])[0].get('device_id')
         products = data.get('products', [])
         
-        if not products:
-            return jsonify({'success': False, 'message': 'No products provided'}), 400
+        if not device_id:
+            return jsonify({'success': False, 'message': 'Missing Device ID'}), 400
+
+        now_iso = datetime.now(timezone.utc).isoformat()
 
         with dbLock, getDatabaseConnection() as conn:
             cursor = conn.cursor()
@@ -272,122 +223,108 @@ def batchSyncProducts():
                 name = p.get('name')
                 price = p.get('price')
                 image = p.get('image', '')
+                qty = p.get('quantity', 0) 
                 
-                # Tự động tính giá vốn = 70% giá bán (hoặc 0 nếu không muốn set)
-                cost = price * 0.7
-                
-                # Dùng UPSERT: Nếu có rồi thì update giá/mô tả, chưa có thì thêm mới
+                # 1. Update MASTER DATA (inventory)
+                # ĐÃ XÓA units_left và reorder_point ở đây
                 cursor.execute("""
-                    INSERT INTO inventory (item_name, price, cost_price, units_left, description, reorder_point)
-                    VALUES (?, ?, ?, 100, ?, 10)
+                    INSERT INTO inventory (item_name, price, cost_price, description)
+                    VALUES (?, ?, ?, ?)
                     ON CONFLICT(item_name) DO UPDATE SET
                         price = excluded.price,
                         description = excluded.description
-                """, (name, price, cost, f"Image: {image}"))
+                """, (name, price, price * 0.7, f"Image: {image}"))
+
+                # 2. Update DEVICE INVENTORY (Kho riêng)
+                cursor.execute("""
+                    INSERT INTO device_inventory (device_id, item_name, units_left, last_updated)
+                    VALUES (?, ?, ?, ?)
+                    ON CONFLICT(device_id, item_name) DO UPDATE SET
+                        units_left = excluded.units_left,
+                        last_updated = excluded.last_updated
+                """, (device_id, name, qty, now_iso))
                 count += 1
             
             conn.commit()
             
-        logSystemEvent('batch_sync', f'Synced {count} products from client.')
-        return jsonify({'success': True, 'message': f'Synced {count} items successfully'})
-
+        logSystemEvent('batch_sync', f'Synced {count} items for {device_id}')
+        return jsonify({'success': True, 'message': f'Synced {count} items'})
     except Exception as e:
-        logger.error(f"Error in batch sync: {e}")
+        logger.error(f"Sync Error: {e}")
         return jsonify({'success': False, 'message': str(e)}), 500
+
 @app.route('/api/products/set_custom', methods=['POST'])
 def setDevicePrice():
-    """
-    API để set giá riêng cho một máy cụ thể.
-    Body: { "device_id": "MAY_SAN_BAY", "item_name": "Aquafina", "price": 20000 }
-    """
+    """Admin: Set giá riêng cho máy"""
     try:
         data = request.get_json()
         device_id = data.get('device_id')
         item_name = data.get('item_name')
-        price = data.get('price')           # Có thể null nếu chỉ muốn sửa giá vốn
-        cost_price = data.get('cost_price') # Có thể null
+        price = data.get('price')
         
-        if not device_id or not item_name:
-            return jsonify({'success': False, 'message': 'Missing device_id or item_name'}), 400
-
         with dbLock, getDatabaseConnection() as conn:
-            # Dùng INSERT OR REPLACE để cập nhật nếu đã có, thêm mới nếu chưa có
             conn.execute("""
-                INSERT INTO device_pricing (device_id, item_name, custom_price, custom_cost_price)
-                VALUES (?, ?, ?, ?)
-                ON CONFLICT(device_id, item_name) DO UPDATE SET
-                    custom_price = excluded.custom_price,
-                    custom_cost_price = excluded.custom_cost_price
-            """, (device_id, item_name, price, cost_price))
+                INSERT INTO device_pricing (device_id, item_name, custom_price)
+                VALUES (?, ?, ?)
+                ON CONFLICT(device_id, item_name) DO UPDATE SET custom_price = excluded.custom_price
+            """, (device_id, item_name, price))
             conn.commit()
-            
-        logSystemEvent('custom_price_set', f'Set price for {item_name} on {device_id}')
-        return jsonify({'success': True, 'message': 'Custom price set successfully'})
-
+        return jsonify({'success': True})
     except Exception as e:
-        logger.error(f"Error: {e}")
         return jsonify({'success': False, 'message': str(e)}), 500
+
 @app.route('/api/products', methods=['GET'])
 def getProducts():
+    """
+    Client: Lấy danh sách.
+    - Nếu có X-Device-ID: Lấy units_left từ device_inventory.
+    - Nếu không (Admin): Lấy master data (không có units_left).
+    """
     try:
-        # 1. Lấy ID của máy đang gọi lên (Client phải gửi header này)
         device_id = request.headers.get('X-Device-ID')
         
         with getDatabaseConnection() as conn:
-            conn.row_factory = sqlite3.Row # Để truy cập bằng tên cột
+            conn.row_factory = sqlite3.Row
             
-            # 2. Lấy danh sách sản phẩm gốc (Giá mặc định)
-            base_products = {row['item_name']: dict(row) for row in conn.execute("SELECT * FROM inventory").fetchall()}
-            
-            # 3. Nếu có device_id, tìm xem có giá riêng không
             if device_id:
-                overrides = conn.execute("""
-                    SELECT item_name, custom_price, custom_cost_price 
-                    FROM device_pricing 
-                    WHERE device_id = ?
-                """, (device_id,)).fetchall()
-                
-                # 4. Ghi đè giá riêng vào danh sách gốc
-                for row in overrides:
-                    item_name = row['item_name']
-                    if item_name in base_products:
-                        # Chỉ ghi đè nếu giá trị không phải None
-                        if row['custom_price'] is not None:
-                            base_products[item_name]['price'] = row['custom_price']
-                        if row['custom_cost_price'] is not None:
-                            base_products[item_name]['cost_price'] = row['custom_cost_price']
-                            
-                        # Đánh dấu để Client biết đây là giá riêng (Option)
-                        base_products[item_name]['is_custom_price'] = True
+                # JOIN lấy tồn kho riêng của máy
+                query = """
+                    SELECT i.item_name, i.price, i.description, 
+                           COALESCE(d.units_left, 0) as units_left,
+                           dp.custom_price
+                    FROM inventory i
+                    LEFT JOIN device_inventory d ON i.item_name = d.item_name AND d.device_id = ?
+                    LEFT JOIN device_pricing dp ON i.item_name = dp.item_name AND dp.device_id = ?
+                """
+                rows = conn.execute(query, (device_id, device_id)).fetchall()
+            else:
+                # Admin/Mặc định: Lấy master data.
+                # LƯU Ý: Không còn cột units_left trong inventory nữa
+                rows = conn.execute("SELECT * FROM inventory").fetchall()
 
-            # Chuyển về dạng list để trả về JSON
-            final_products_list = list(base_products.values())
+            final_list = []
+            for row in rows:
+                p = dict(row)
+                if device_id and row.get('custom_price') is not None:
+                    p['price'] = row['custom_price']
+                p.pop('custom_price', None)
+                final_list.append(p)
 
-        return jsonify({'success': True, 'products': final_products_list, 'for_device': device_id})
+        return jsonify({'success': True, 'products': final_list})
     except Exception as e:
-        logger.error(f"Error in /api/products: {e}", exc_info=True)
-        return jsonify({'success': False, 'message': 'Internal Server Error'}), 500
+        logger.error(f"Get Products Error: {e}")
+        return jsonify({'success': False}), 500
 
 # =============================================================================
-# ENDPOINT GHI NHẬN GIAO DỊCH
+# 3. API GIAO DỊCH
 # =============================================================================
-
-def calculate_points_earned(amount):
-    """Hàm helper để tính điểm nhận được từ một giao dịch."""
-    return int(amount / 1000)
 
 @app.route('/api/transactions/record', methods=['POST'])
 def recordTransaction():
     try:
         data = request.get_json()
-        device_id = request.headers.get('X-Device-ID', 'UNKNOWN_DEVICE')
-        logger.info(f"Received transaction data from {device_id}: {data}")
-
-        required = ['total_amount', 'items']
-        if not all(field in data for field in required):
-            logger.warning(f"Bad request from {device_id}: Missing required fields.")
-            return jsonify({'success': False, 'message': 'Missing required fields (total_amount, items)'}), 400
-
+        device_id = request.headers.get('X-Device-ID') or data.get('device_id', 'UNKNOWN')
+        
         total_amount = data['total_amount']
         items = data['items']
         customer_info = data.get('customer_info')
@@ -395,78 +332,59 @@ def recordTransaction():
         with dbLock, getDatabaseConnection() as conn:
             cursor = conn.cursor()
             
+            # 1. Lưu transaction
             transaction_id = f"trans_{uuid.uuid4().hex[:10]}"
             items_str = json.dumps(items)
             now_iso = datetime.now(timezone.utc).isoformat()
+            user_id = customer_info.get('user_id') if customer_info else None
             
-            user_id = None
-            
-            # <<< THAY ĐỔI LỚN 1: Lấy user_id và new_total_points từ client >>>
-            if customer_info and isinstance(customer_info, dict):
-                user_id = customer_info.get('user_id')
-                # Lấy trực tiếp số điểm cuối cùng mà client đã tính toán
-                new_total_points = customer_info.get('new_total_points') 
-
-            # 1. LƯU GIAO DỊCH (Không thay đổi)
             cursor.execute("""
                 INSERT INTO transactions (transaction_id, total_amount, items, user_id, device_id, payment_status, created_at)
                 VALUES (?, ?, ?, ?, ?, 'completed', ?)
             """, (transaction_id, total_amount, items_str, user_id, device_id, now_iso))
-            logger.info(f"Transaction {transaction_id} inserted into database.")
             
-            # 2. CẬP NHẬT KHO (MỚI THÊM)
-            # Duyệt qua từng món hàng trong items để trừ kho
+            # 2. Xử lý kho và thống kê
             for item in items:
-                # item cần có key 'product_name' hoặc 'item_name' từ client gửi lên
-                p_name = item.get('product_name') or item.get('name') 
+                p_name = item.get('product_name') or item.get('name')
                 qty = item.get('quantity', 1)
                 
                 if p_name:
+                    # A. Trừ kho RIÊNG (device_inventory)
+                    cursor.execute("""
+                        UPDATE device_inventory 
+                        SET units_left = units_left - ? 
+                        WHERE item_name = ? AND device_id = ?
+                    """, (qty, p_name, device_id))
+                    
+                    # B. Cộng tổng bán (inventory)
                     cursor.execute("""
                         UPDATE inventory 
-                        SET units_left = units_left - ?, 
-                            units_sold = units_sold + ? 
+                        SET units_sold = units_sold + ? 
                         WHERE item_name = ?
-                    """, (qty, qty, p_name))
+                    """, (qty, p_name))
+
+            # 3. Cập nhật điểm
+            if user_id and customer_info:
+                new_total = customer_info.get('new_total_points')
+                if new_total is not None:
+                     cursor.execute("""
+                        UPDATE users 
+                        SET points = ?, updated_at = ? 
+                        WHERE user_id = ?
+                     """, (new_total, now_iso, user_id))
             
-            # 3. CẬP NHẬT ĐIỂM (LOGIC MỚI - SIÊU ĐƠN GIẢN)
-            # Nếu client gửi lên user_id VÀ số điểm mới thì mới cập nhật
-            if user_id and new_total_points is not None:
-                logger.info(f"Processing points update for user '{user_id}' based on client data.")
-                
-                # <<< THAY ĐỔI LỚN 2: KHÔNG TÍNH TOÁN, CHỈ GHI ĐÈ >>>
-                # Cập nhật thẳng số điểm mà client gửi lên.
-                cursor.execute("UPDATE users SET points = ?, updated_at = ? WHERE user_id = ?", 
-                               (new_total_points, now_iso, user_id))
-                
-                log_msg = (f"Points updated for user {user_id} via client instruction. "
-                           f"New total points: {new_total_points}")
-                logger.info(log_msg)
-                logSystemEvent('points_updated_by_client', log_msg)
-            else:
-                logger.info(f"Transaction {transaction_id} is for a guest or has no points data. No points updated.")
-        
-        logSystemEvent('transaction_recorded', f'Transaction {transaction_id} from {device_id} recorded successfully.')
-        return jsonify({
-            'success': True, 
-            'message': 'Transaction recorded and points updated successfully based on client data', 
-            'transaction_id': transaction_id
-        })
+            conn.commit()
+
+        logSystemEvent('transaction', f'Recorded {transaction_id} from {device_id}')
+        return jsonify({'success': True, 'transaction_id': transaction_id})
 
     except Exception as e:
-        logger.error(f"CRITICAL ERROR in /api/transactions/record: {e}", exc_info=True)
-        return jsonify({'success': False, 'message': 'Internal Server Error'}), 500
+        logger.error(f"Transaction Error: {e}")
+        return jsonify({'success': False, 'message': str(e)}), 500
 
 @app.route('/api/transactions', methods=['GET'])
 def list_transactions():
-    """
-    Lấy danh sách lịch sử giao dịch.
-    Hỗ trợ phân trang và lọc theo device_id hoặc user_id.
-    - /api/transactions
-    - /api/transactions?limit=10&offset=20
-    - /api/transactions?device_id=VENDING_001
-    - /api/transactions?user_id=user_xxxxxxxx
-    """
+    """Admin: Xem lịch sử giao dịch"""
     try:
         limit = int(request.args.get('limit', 20))
         offset = int(request.args.get('offset', 0))
@@ -476,8 +394,8 @@ def list_transactions():
         with dbLock, getDatabaseConnection() as conn:
             query = "SELECT * FROM transactions"
             count_query = "SELECT COUNT(*) as total FROM transactions"
-            params = []
             conditions = []
+            params = []
 
             if device_id:
                 conditions.append("device_id = ?")
@@ -487,62 +405,35 @@ def list_transactions():
                 params.append(user_id)
 
             if conditions:
-                where_clause = " WHERE " + " AND ".join(conditions)
-                query += where_clause
-                count_query += where_clause
+                clause = " WHERE " + " AND ".join(conditions)
+                query += clause
+                count_query += clause
             
-            total_records = conn.execute(count_query, params).fetchone()['total']
+            total = conn.execute(count_query, params).fetchone()['total']
             
             query += " ORDER BY created_at DESC LIMIT ? OFFSET ?"
             params.extend([limit, offset])
 
-            transactions = [dict(row) for row in conn.execute(query, params).fetchall()]
+            trans = [dict(row) for row in conn.execute(query, params).fetchall()]
 
-        return jsonify({
-            'success': True,
-            'total': total_records,
-            'transactions': transactions
-        })
+        return jsonify({'success': True, 'total': total, 'transactions': trans})
     except Exception as e:
-        logger.error(f"Error in /api/transactions: {e}", exc_info=True)
-        return jsonify({'success': False, 'message': 'Internal Server Error'}), 500
+        return jsonify({'success': False, 'message': str(e)}), 500
 
 @app.route('/api/inventory/stats', methods=['GET'])
 def get_inventory_stats():
+    """Admin: Xem thống kê bán chạy"""
     try:
         with dbLock, getDatabaseConnection() as conn:
-            # Lấy trực tiếp từ cột units_sold của bảng inventory
-            # Cách này nhanh hơn nhiều so với việc parse lại JSON từ bảng transactions
             stats = conn.execute("SELECT item_name, units_sold FROM inventory ORDER BY units_sold DESC").fetchall()
-            
             result = {row['item_name']: row['units_sold'] for row in stats}
 
-        return jsonify({
-            'success': True,
-            'stats': result
-        })
+        return jsonify({'success': True, 'stats': result})
     except Exception as e:
-        logger.error(f"Error in /api/inventory/stats: {e}", exc_info=True)
-        return jsonify({'success': False, 'message': 'Internal Server Error'}), 500
+        return jsonify({'success': False}), 500
 
-# =============================================================================
-# BỘ XỬ LÝ LỖI
-# =============================================================================
-
-@app.errorhandler(404)
-def notFound(error):
-    logger.warning(f"404 Not Found: {request.method} {request.path}")
-    return jsonify({'success': False, 'message': 'Endpoint not found', 'path': request.path}), 404
-
-# --- KHỞI CHẠY SERVER ---
+# --- KHỞI CHẠY ---
 if __name__ == '__main__':
     create_tables()
-    populate_initial_products()
-    
-    print("*" * 60)
-    print("  Vending Machine Central Server (Streamlined Version)")
-    print("  Server is ready and listening...")
-    print("*" * 60)
-    
-    # Chạy server ở cổng 5000 để khớp với client
+    print("Server Vending Machine (Full Version with Multi-Client) running on port 5000...")
     app.run(host='0.0.0.0', port=5000, debug=True)
