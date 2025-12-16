@@ -1,0 +1,14 @@
+[Unit]
+Description=Central Server Dashboard (Streamlit)
+After=network.target
+
+[Service]
+User=pi
+WorkingDirectory=/home/pi/Desktop/SERVER/icc-25-cdpd-uit/central_server
+Environment=PATH=/home/pi/Desktop/SERVER/icc-25-cdpd-uit/central_server/venv/bin:/usr/local/bin:/usr/bin:/bin
+ExecStart=/home/pi/Desktop/SERVER/icc-25-cdpd-uit/central_server/venv/bin/streamlit run dashboard/main.py --server.port 8501 --server.address 0.0.0.0
+Restart=always
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target

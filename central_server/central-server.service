@@ -5,7 +5,7 @@ After=network.target
 [Service]
 User=pi
 WorkingDirectory=/home/pi/Desktop/SERVER/icc-25-cdpd-uit/central_server
-ExecStart=/usr/bin/python3 app.py
+ExecStart=/home/pi/Desktop/SERVER/icc-25-cdpd-uit/central_server/venv/bin/python3 app.py
 Restart=always
 
 [Install]

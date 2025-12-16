@@ -231,7 +231,6 @@ def batchSyncProducts():
                     INSERT INTO inventory (item_name, price, cost_price, description)
                     VALUES (?, ?, ?, ?)
                     ON CONFLICT(item_name) DO UPDATE SET
-                        price = excluded.price,
                         description = excluded.description
                 """, (name, price, price * 0.7, f"Image: {image}"))
 
@@ -283,7 +282,7 @@ def getProducts():
     try:
         device_id = request.headers.get('X-Device-ID')
         
-        with getDatabaseConnection() as conn:
+        with dbLock, getDatabaseConnection() as conn: 
             conn.row_factory = sqlite3.Row
             
             if device_id:
@@ -305,8 +304,16 @@ def getProducts():
             final_list = []
             for row in rows:
                 p = dict(row)
-                if device_id and row.get('custom_price') is not None:
-                    p['price'] = row['custom_price']
+                
+                if device_id:
+                    # Nếu có giá riêng thì lấy, không thì giữ giá gốc
+                    if 'custom_price' in p and p['custom_price'] is not None:
+                        p['price'] = p['custom_price']
+                        
+                    # Nếu units_left bị None (do chưa sync kho), gán bằng 0
+                    if 'units_left' in p and p['units_left'] is None:
+                        p['units_left'] = 0
+
                 p.pop('custom_price', None)
                 final_list.append(p)
 
@@ -431,6 +438,78 @@ def get_inventory_stats():
         return jsonify({'success': True, 'stats': result})
     except Exception as e:
         return jsonify({'success': False}), 500
+
+# =============================================================================
+# 4. API CẬP NHẬT TỆN SP, GIÁ, SỐ LƯỢNG THEO YÊU CẦU
+# =============================================================================
+
+@app.route('/api/admin/update_product', methods=['POST'])
+def admin_update_product():
+    """
+    API dành cho Dashboard Streamlit cập nhật thông tin sản phẩm.
+    Hỗ trợ: Đổi tên (nguy hiểm), Đổi giá, Cập nhật tồn kho (Device).
+    """
+    try:
+        data = request.get_json()
+        old_name = data.get('old_name')
+        new_name = data.get('new_name') # Nếu đổi tên
+        new_price = data.get('price')
+        add_stock = data.get('add_stock', 0) # Số lượng cộng thêm
+        device_id = data.get('device_id')    # Máy nào được cộng kho
+        
+        with dbLock, getDatabaseConnection() as conn:
+            cursor = conn.cursor()
+            
+            # 1. Xử lý ĐỔI TÊN (Phức tạp nhất vì liên quan nhiều bảng)
+            if old_name and new_name and old_name != new_name:
+                # Kiểm tra tên mới có trùng không
+                exists = cursor.execute("SELECT 1 FROM inventory WHERE item_name = ?", (new_name,)).fetchone()
+                if exists:
+                    return jsonify({'success': False, 'message': 'Tên sản phẩm mới đã tồn tại!'}), 400
+                
+                # Cập nhật bảng inventory (Master)
+                cursor.execute("UPDATE inventory SET item_name = ? WHERE item_name = ?", (new_name, old_name))
+                # Cập nhật bảng device_inventory
+                cursor.execute("UPDATE device_inventory SET item_name = ? WHERE item_name = ?", (new_name, old_name))
+                # Cập nhật bảng device_pricing
+                cursor.execute("UPDATE device_pricing SET item_name = ? WHERE item_name = ?", (new_name, old_name))
+                
+                # Lưu ý: Không đổi tên trong bảng transactions để giữ lịch sử gốc (hoặc đổi tùy nhu cầu)
+                target_name = new_name
+            else:
+                target_name = old_name
+
+            # 2. Xử lý ĐỔI GIÁ (Master Data)
+            if new_price is not None:
+                cursor.execute("UPDATE inventory SET price = ? WHERE item_name = ?", (new_price, target_name))
+
+            # 3. Xử lý CẬP NHẬT KHO (Device Inventory)
+            # Chỉ cập nhật nếu có device_id và số lượng add_stock khác 0
+            if device_id and add_stock != 0:
+                # Kiểm tra xem máy đó đã có sản phẩm này trong kho chưa
+                row = cursor.execute("SELECT units_left FROM device_inventory WHERE device_id = ? AND item_name = ?", (device_id, target_name)).fetchone()
+                
+                now_iso = datetime.now(timezone.utc).isoformat()
+                if row:
+                    # Đã có -> Cộng dồn
+                    cursor.execute("""
+                        UPDATE device_inventory 
+                        SET units_left = units_left + ?, last_updated = ?
+                        WHERE device_id = ? AND item_name = ?
+                    """, (add_stock, now_iso, device_id, target_name))
+                else:
+                    # Chưa có -> Tạo mới
+                    cursor.execute("""
+                        INSERT INTO device_inventory (device_id, item_name, units_left, last_updated)
+                        VALUES (?, ?, ?, ?)
+                    """, (device_id, target_name, add_stock, now_iso))
+
+            conn.commit()
+            
+        return jsonify({'success': True, 'message': 'Cập nhật sản phẩm thành công'})
+    except Exception as e:
+        logger.error(f"Admin Update Error: {e}")
+        return jsonify({'success': False, 'message': str(e)}), 500
 
 # --- KHỞI CHẠY ---
 if __name__ == '__main__':
