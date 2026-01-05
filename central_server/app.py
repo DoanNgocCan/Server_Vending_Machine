@@ -9,6 +9,7 @@ import sqlite3
 import uuid
 import threading
 import logging
+import unicodedata
 
 # --- CẤU HÌNH ---
 logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(message)s")
@@ -326,20 +327,27 @@ def getProducts():
 # 3. API GIAO DỊCH
 # =============================================================================
 
+# --- Thay thế trong file app.py ---
+
+# --- TRONG FILE app.py ---
+
 @app.route('/api/transactions/record', methods=['POST'])
 def recordTransaction():
     try:
         data = request.get_json()
-        device_id = request.headers.get('X-Device-ID') or data.get('device_id', 'UNKNOWN')
+        # Lấy device_id
+        device_id = data.get('device_id') or request.headers.get('X-Device-ID') or 'UNKNOWN'
         
         total_amount = data['total_amount']
         items = data['items']
         customer_info = data.get('customer_info')
         
+        print(f"DEBUG: Nhận đơn hàng từ Device: {device_id}")
+
         with dbLock, getDatabaseConnection() as conn:
             cursor = conn.cursor()
             
-            # 1. Lưu transaction
+            # 1. Lưu transaction (Giữ nguyên)
             transaction_id = f"trans_{uuid.uuid4().hex[:10]}"
             items_str = json.dumps(items)
             now_iso = datetime.now(timezone.utc).isoformat()
@@ -350,40 +358,59 @@ def recordTransaction():
                 VALUES (?, ?, ?, ?, ?, 'completed', ?)
             """, (transaction_id, total_amount, items_str, user_id, device_id, now_iso))
             
-            # 2. Xử lý kho và thống kê
+            # 2. Xử lý kho (Giữ nguyên logic trừ kho)
             for item in items:
-                p_name = item.get('product_name') or item.get('name')
+                p_name = item.get('product_name') or item.get('name') or item.get('item_name')
                 qty = item.get('quantity', 1)
                 
                 if p_name:
-                    # A. Trừ kho RIÊNG (device_inventory)
+                    # Trừ kho riêng
                     cursor.execute("""
                         UPDATE device_inventory 
                         SET units_left = units_left - ? 
                         WHERE item_name = ? AND device_id = ?
                     """, (qty, p_name, device_id))
                     
-                    # B. Cộng tổng bán (inventory)
+                    # Cộng tổng bán
                     cursor.execute("""
                         UPDATE inventory 
                         SET units_sold = units_sold + ? 
                         WHERE item_name = ?
                     """, (qty, p_name))
 
-            # 3. Cập nhật điểm
+            # 3. [THAY ĐỔI QUAN TRỌNG] Cập nhật điểm: KHÔNG TÍNH TOÁN, CHỈ GHI ĐÈ
+            current_user_points = 0
+            
             if user_id and customer_info:
-                new_total = customer_info.get('new_total_points')
-                if new_total is not None:
-                     cursor.execute("""
+                # Lấy điểm Client gửi lên (Client là nơi quyết định số điểm)
+                client_points = customer_info.get('current_points')
+
+                if client_points is not None:
+                    # Ghi đè điểm từ Client vào Server ngay lập tức
+                    cursor.execute("""
                         UPDATE users 
                         SET points = ?, updated_at = ? 
                         WHERE user_id = ?
-                     """, (new_total, now_iso, user_id))
-            
+                    """, (client_points, now_iso, user_id))
+                    
+                    current_user_points = client_points
+                    print(f"✅ UPDATE POINT: User {user_id} đồng bộ thành {client_points} điểm (Từ Client)")
+                else:
+                    # Nếu Client quên gửi điểm, lấy điểm hiện tại trong DB để trả về (không cộng thêm gì cả)
+                    row = cursor.execute("SELECT points FROM users WHERE user_id = ?", (user_id,)).fetchone()
+                    if row:
+                        current_user_points = row['points']
+
             conn.commit()
 
         logSystemEvent('transaction', f'Recorded {transaction_id} from {device_id}')
-        return jsonify({'success': True, 'transaction_id': transaction_id})
+        
+        # Trả về điểm mới nhất (chính là điểm client vừa gửi) để confirm
+        return jsonify({
+            'success': True, 
+            'transaction_id': transaction_id,
+            'new_points': current_user_points 
+        })
 
     except Exception as e:
         logger.error(f"Transaction Error: {e}")
@@ -509,6 +536,48 @@ def admin_update_product():
         return jsonify({'success': True, 'message': 'Cập nhật sản phẩm thành công'})
     except Exception as e:
         logger.error(f"Admin Update Error: {e}")
+        return jsonify({'success': False, 'message': str(e)}), 500
+
+@app.route('/api/user/sync_profile', methods=['POST'])
+def sync_user_profile():
+    """
+    API nhận thông tin user từ Client gửi lên để đồng bộ (Ghi đè).
+    Dùng cho trường hợp máy bán hàng khởi động hoặc vào màn hình Welcome.
+    """
+    try:
+        data = request.get_json()
+        user_id = data.get('user_id')
+        if not user_id: 
+            return jsonify({'success': False, 'message': 'Missing user_id'}), 400
+
+        # Lấy các thông tin gửi lên
+        full_name = data.get('full_name')
+        phone = data.get('phone_number')
+        dob = data.get('birthday')
+        pwd = data.get('password', '123456')
+        points = data.get('points', 0) # <--- ĐIỂM TỪ LOCAL GỬI LÊN
+        created_at = data.get('created_at', datetime.now(timezone.utc).isoformat())
+        now_iso = datetime.now(timezone.utc).isoformat()
+
+        with dbLock, getDatabaseConnection() as conn:
+            # Câu lệnh SQL "UPSERT": Nếu trùng user_id thì Update, chưa có thì Insert
+            conn.execute("""
+                INSERT INTO users (user_id, full_name, phone_number, birthday, password, points, status, created_at, updated_at)
+                VALUES (?, ?, ?, ?, ?, ?, 'active', ?, ?)
+                ON CONFLICT(user_id) DO UPDATE SET
+                    full_name = excluded.full_name,
+                    phone_number = excluded.phone_number,
+                    birthday = excluded.birthday,
+                    password = excluded.password,
+                    points = excluded.points,  -- GHI ĐÈ ĐIỂM TỪ LOCAL
+                    updated_at = excluded.updated_at
+            """, (user_id, full_name, phone, dob, pwd, points, created_at, now_iso))
+            conn.commit()
+            
+        return jsonify({'success': True})
+
+    except Exception as e:
+        logger.error(f"Sync User Profile Error: {e}")
         return jsonify({'success': False, 'message': str(e)}), 500
 
 # --- KHỞI CHẠY ---
