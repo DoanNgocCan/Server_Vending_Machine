@@ -1,4 +1,4 @@
-version: '3.8'
+version: "3.8"
 services:
   db:
     image: postgres:16-alpine
@@ -42,15 +42,15 @@ services:
       - web
 
   # Cloudflare Tunnel — uncomment after getting token from Cloudflare Dashboard
-  # tunnel:
-  #   image: cloudflare/cloudflared:latest
-  #   container_name: vending-tunnel
-  #   restart: always
-  #   command: tunnel run
-  #   environment:
-  #     TUNNEL_TOKEN: ${CLOUDFLARE_TUNNEL_TOKEN}
-  #   depends_on:
-  #     - web
+  tunnel:
+    image: cloudflare/cloudflared:latest
+    container_name: vending-tunnel
+    restart: always
+    command: tunnel run
+    environment:
+      TUNNEL_TOKEN: ${CLOUDFLARE_TUNNEL_TOKEN}
+    depends_on:
+      - web
 
 volumes:
   postgres_data:

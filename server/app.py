@@ -642,8 +642,9 @@ def sync_user_profile():
         logger.error(f"Sync User Profile Error: {e}")
         return jsonify({'success': False, 'message': str(e)}), 500
 
+create_tables()
+
 # --- KHỞI CHẠY ---
 if __name__ == '__main__':
-    create_tables()
     print("Server Vending Machine running on port 5000...")
     app.run(host='0.0.0.0', port=5000, debug=False)
