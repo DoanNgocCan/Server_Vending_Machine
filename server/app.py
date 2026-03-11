@@ -1,13 +1,12 @@
-# --- START OF FILE app.py (CLEAN VERSION: NO UNITS_LEFT IN MASTER INVENTORY) ---
+# --- Vending Machine Central Server (PostgreSQL Version) ---
 
 from flask import Flask, request, jsonify
 from flask_cors import CORS
 from datetime import datetime, timezone
 import json
 import os
-import sqlite3
+import psycopg2
 import uuid
-import threading
 import logging
 import unicodedata
 
@@ -15,23 +14,35 @@ import unicodedata
 logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(message)s")
 logger = logging.getLogger(__name__)
 
-DB_PATH = os.path.join(os.path.dirname(__file__), 'central_server.db')
+DATABASE_URL = os.environ.get('DATABASE_URL', 'postgresql://vending:vending123@localhost:5432/vending_machine')
+
 app = Flask(__name__)
 CORS(app)
-dbLock = threading.Lock()
 
 # --- CÁC HÀM TIỆN ÍCH DATABASE ---
 def getDatabaseConnection():
-    """Thiết lập kết nối đến CSDL SQLite."""
-    conn = sqlite3.connect(DB_PATH, check_same_thread=False)
-    conn.row_factory = sqlite3.Row
-    return conn
+    """Thiết lập kết nối đến CSDL PostgreSQL."""
+    return psycopg2.connect(DATABASE_URL)
+
+def dict_fetchone(cursor):
+    """Trả về một hàng dưới dạng dict."""
+    row = cursor.fetchone()
+    if row is None:
+        return None
+    columns = [desc[0] for desc in cursor.description]
+    return dict(zip(columns, row))
+
+def dict_fetchall(cursor):
+    """Trả về tất cả hàng dưới dạng list of dict."""
+    columns = [desc[0] for desc in cursor.description]
+    return [dict(zip(columns, row)) for row in cursor.fetchall()]
 
 def create_tables():
     """Tạo các bảng CSDL cần thiết."""
-    with getDatabaseConnection() as conn:
+    conn = getDatabaseConnection()
+    try:
         cursor = conn.cursor()
-        
+
         # 1. Bảng users
         cursor.execute("""
             CREATE TABLE IF NOT EXISTS users (
@@ -47,11 +58,10 @@ def create_tables():
             )
         """)
 
-        # 2. Bảng inventory (MASTER DATA - Đã xóa units_left và reorder_point)
-        # Bảng này chỉ chứa thông tin tĩnh của sản phẩm + tổng số đã bán
+        # 2. Bảng inventory (MASTER DATA)
         cursor.execute("""
             CREATE TABLE IF NOT EXISTS inventory (
-                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                id SERIAL PRIMARY KEY,
                 item_name TEXT UNIQUE NOT NULL,
                 price REAL NOT NULL,
                 units_sold INTEGER DEFAULT 0,
@@ -61,13 +71,12 @@ def create_tables():
         """)
 
         # 3. Bảng device_inventory (KHO RIÊNG TỪNG MÁY)
-        # Đây là nơi duy nhất lưu trữ tồn kho thực tế (units_left)
         cursor.execute("""
             CREATE TABLE IF NOT EXISTS device_inventory (
-                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                id SERIAL PRIMARY KEY,
                 device_id TEXT NOT NULL,
                 item_name TEXT NOT NULL,
-                units_left INTEGER DEFAULT 0, 
+                units_left INTEGER DEFAULT 0,
                 last_updated TEXT,
                 UNIQUE(device_id, item_name)
             )
@@ -87,11 +96,11 @@ def create_tables():
                 paid_at TEXT
             )
         """)
-        
+
         # 5. Bảng giá riêng (Custom Price)
         cursor.execute("""
             CREATE TABLE IF NOT EXISTS device_pricing (
-                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                id SERIAL PRIMARY KEY,
                 device_id TEXT NOT NULL,
                 item_name TEXT NOT NULL,
                 custom_price REAL,
@@ -99,8 +108,15 @@ def create_tables():
                 UNIQUE(device_id, item_name)
             )
         """)
+
         conn.commit()
-        logger.info("Database tables checked/created (Clean Version).")
+        logger.info("Database tables checked/created.")
+    except Exception as e:
+        conn.rollback()
+        logger.error(f"Error creating tables: {e}")
+        raise
+    finally:
+        conn.close()
 
 def logSystemEvent(event_type, message, metadata=None):
     logger.info(f"[{event_type.upper()}]: {message} | Metadata: {metadata}")
@@ -120,24 +136,30 @@ def listUsers():
         limit = int(request.args.get('limit', 20))
         offset = int(request.args.get('offset', 0))
         search = request.args.get('search', None)
-        
-        with dbLock, getDatabaseConnection() as conn:
+
+        conn = getDatabaseConnection()
+        try:
+            cursor = conn.cursor()
             base_query = "SELECT user_id, full_name, phone_number, points, birthday, status, created_at FROM users"
-            count_query = "SELECT COUNT(*) as total FROM users"
+            count_query = "SELECT COUNT(*) AS total FROM users"
             params = []
 
             if search:
-                where_clause = " WHERE (full_name LIKE ? OR phone_number LIKE ?)"
+                where_clause = " WHERE (full_name LIKE %s OR phone_number LIKE %s)"
                 base_query += where_clause
                 count_query += where_clause
                 params.extend([f"%{search}%", f"%{search}%"])
 
-            total_records = conn.execute(count_query, params).fetchone()['total']
-            
-            base_query += " ORDER BY created_at DESC LIMIT ? OFFSET ?"
+            cursor.execute(count_query, params)
+            total_records = cursor.fetchone()[0]
+
+            base_query += " ORDER BY created_at DESC LIMIT %s OFFSET %s"
             params.extend([limit, offset])
-            
-            users = [dict(row) for row in conn.execute(base_query, params).fetchall()]
+
+            cursor.execute(base_query, params)
+            users = dict_fetchall(cursor)
+        finally:
+            conn.close()
 
         return jsonify({'success': True, 'total': total_records, 'users': users})
     except Exception as e:
@@ -154,19 +176,28 @@ def registerUser():
 
         user_id = data['user_id']
         now_iso = datetime.now(timezone.utc).isoformat()
-        
-        with dbLock, getDatabaseConnection() as conn:
+
+        conn = getDatabaseConnection()
+        try:
             cursor = conn.cursor()
-            if cursor.execute("SELECT 1 FROM users WHERE phone_number = ?", (data['phone_number'],)).fetchone():
+            cursor.execute("SELECT 1 FROM users WHERE phone_number = %s", (data['phone_number'],))
+            if cursor.fetchone():
                 return jsonify({'success': False, 'message': 'Phone exists'}), 409
-            if cursor.execute("SELECT 1 FROM users WHERE user_id = ?", (user_id,)).fetchone():
+            cursor.execute("SELECT 1 FROM users WHERE user_id = %s", (user_id,))
+            if cursor.fetchone():
                 return jsonify({'success': False, 'message': 'ID exists'}), 409
-            
+
             cursor.execute("""
                 INSERT INTO users (user_id, full_name, phone_number, birthday, password, status, created_at, updated_at)
-                VALUES (?, ?, ?, ?, ?, 'active', ?, ?)
+                VALUES (%s, %s, %s, %s, %s, 'active', %s, %s)
             """, (user_id, data['full_name'], data['phone_number'], data['birthday'], data['password'], now_iso, now_iso))
-        
+            conn.commit()
+        except Exception:
+            conn.rollback()
+            raise
+        finally:
+            conn.close()
+
         logSystemEvent('user_register', f'Registered {user_id}')
         return jsonify({'success': True, 'user_id': user_id, 'message': 'Success'})
     except Exception as e:
@@ -179,74 +210,92 @@ def loginUser():
     phone = data.get('phone_number')
     password = data.get('password')
     try:
-        with getDatabaseConnection() as conn:
-            user = conn.execute("SELECT * FROM users WHERE phone_number = ?", (phone,)).fetchone()
+        conn = getDatabaseConnection()
+        try:
+            cursor = conn.cursor()
+            cursor.execute("SELECT * FROM users WHERE phone_number = %s", (phone,))
+            user = dict_fetchone(cursor)
             if user and user['password'] == password:
-                return jsonify({'success': True, 'user': dict(user)})
-    except Exception: pass
+                return jsonify({'success': True, 'user': user})
+        finally:
+            conn.close()
+    except Exception:
+        pass
     return jsonify({'success': False, 'message': 'Invalid credentials'}), 401
 
 @app.route('/api/user/<string:user_id>', methods=['GET'])
 def get_user_by_id(user_id):
     try:
-        with getDatabaseConnection() as conn:
-            user = conn.execute("SELECT user_id, full_name, phone_number, points FROM users WHERE user_id = ?", (user_id,)).fetchone()
-            if user: return jsonify({'success': True, 'user': dict(user)})
+        conn = getDatabaseConnection()
+        try:
+            cursor = conn.cursor()
+            cursor.execute("SELECT user_id, full_name, phone_number, points FROM users WHERE user_id = %s", (user_id,))
+            user = dict_fetchone(cursor)
+            if user:
+                return jsonify({'success': True, 'user': user})
             return jsonify({'success': False}), 404
-    except Exception: return jsonify({'success': False}), 500
+        finally:
+            conn.close()
+    except Exception:
+        return jsonify({'success': False}), 500
 
 # =============================================================================
-# 2. API SẢN PHẨM & KHO (ĐÃ SỬA - KHÔNG CÒN UNITS_LEFT TRONG INVENTORY)
+# 2. API SẢN PHẨM & KHO
 # =============================================================================
 
 @app.route('/api/products/batch_sync', methods=['POST'])
 def batchSyncProducts():
     """
-    [FIXED] Đồng bộ sản phẩm:
-    - inventory: CHỈ lưu tên, giá, ảnh. (Đã bỏ units_left)
+    Đồng bộ sản phẩm:
+    - inventory: CHỈ lưu tên, giá, ảnh.
     - device_inventory: Lưu tồn kho của máy.
     """
     try:
         data = request.get_json()
         device_id = request.headers.get('X-Device-ID') or data.get('products', [{}])[0].get('device_id')
         products = data.get('products', [])
-        
+
         if not device_id:
             return jsonify({'success': False, 'message': 'Missing Device ID'}), 400
 
         now_iso = datetime.now(timezone.utc).isoformat()
 
-        with dbLock, getDatabaseConnection() as conn:
+        conn = getDatabaseConnection()
+        try:
             cursor = conn.cursor()
             count = 0
-            
+
             for p in products:
                 name = p.get('name')
                 price = p.get('price')
                 image = p.get('image', '')
-                qty = p.get('quantity', 0) 
-                
+                qty = p.get('quantity', 0)
+
                 # 1. Update MASTER DATA (inventory)
-                # ĐÃ XÓA units_left và reorder_point ở đây
                 cursor.execute("""
                     INSERT INTO inventory (item_name, price, cost_price, description)
-                    VALUES (?, ?, ?, ?)
+                    VALUES (%s, %s, %s, %s)
                     ON CONFLICT(item_name) DO UPDATE SET
-                        description = excluded.description
+                        description = EXCLUDED.description
                 """, (name, price, price * 0.7, f"Image: {image}"))
 
                 # 2. Update DEVICE INVENTORY (Kho riêng)
                 cursor.execute("""
                     INSERT INTO device_inventory (device_id, item_name, units_left, last_updated)
-                    VALUES (?, ?, ?, ?)
+                    VALUES (%s, %s, %s, %s)
                     ON CONFLICT(device_id, item_name) DO UPDATE SET
-                        units_left = excluded.units_left,
-                        last_updated = excluded.last_updated
+                        units_left = EXCLUDED.units_left,
+                        last_updated = EXCLUDED.last_updated
                 """, (device_id, name, qty, now_iso))
                 count += 1
-            
+
             conn.commit()
-            
+        except Exception:
+            conn.rollback()
+            raise
+        finally:
+            conn.close()
+
         logSystemEvent('batch_sync', f'Synced {count} items for {device_id}')
         return jsonify({'success': True, 'message': f'Synced {count} items'})
     except Exception as e:
@@ -261,14 +310,22 @@ def setDevicePrice():
         device_id = data.get('device_id')
         item_name = data.get('item_name')
         price = data.get('price')
-        
-        with dbLock, getDatabaseConnection() as conn:
-            conn.execute("""
+
+        conn = getDatabaseConnection()
+        try:
+            cursor = conn.cursor()
+            cursor.execute("""
                 INSERT INTO device_pricing (device_id, item_name, custom_price)
-                VALUES (?, ?, ?)
-                ON CONFLICT(device_id, item_name) DO UPDATE SET custom_price = excluded.custom_price
+                VALUES (%s, %s, %s)
+                ON CONFLICT(device_id, item_name) DO UPDATE SET custom_price = EXCLUDED.custom_price
             """, (device_id, item_name, price))
             conn.commit()
+        except Exception:
+            conn.rollback()
+            raise
+        finally:
+            conn.close()
+
         return jsonify({'success': True})
     except Exception as e:
         return jsonify({'success': False, 'message': str(e)}), 500
@@ -282,41 +339,40 @@ def getProducts():
     """
     try:
         device_id = request.headers.get('X-Device-ID')
-        
-        with dbLock, getDatabaseConnection() as conn: 
-            conn.row_factory = sqlite3.Row
-            
+
+        conn = getDatabaseConnection()
+        try:
+            cursor = conn.cursor()
             if device_id:
                 # JOIN lấy tồn kho riêng của máy
                 query = """
-                    SELECT i.item_name, i.price, i.description, 
+                    SELECT i.item_name, i.price, i.description,
                            COALESCE(d.units_left, 0) as units_left,
                            dp.custom_price
                     FROM inventory i
-                    LEFT JOIN device_inventory d ON i.item_name = d.item_name AND d.device_id = ?
-                    LEFT JOIN device_pricing dp ON i.item_name = dp.item_name AND dp.device_id = ?
+                    LEFT JOIN device_inventory d ON i.item_name = d.item_name AND d.device_id = %s
+                    LEFT JOIN device_pricing dp ON i.item_name = dp.item_name AND dp.device_id = %s
                 """
-                rows = conn.execute(query, (device_id, device_id)).fetchall()
+                cursor.execute(query, (device_id, device_id))
             else:
                 # Admin/Mặc định: Lấy master data.
-                # LƯU Ý: Không còn cột units_left trong inventory nữa
-                rows = conn.execute("SELECT * FROM inventory").fetchall()
+                cursor.execute("SELECT * FROM inventory")
 
-            final_list = []
-            for row in rows:
-                p = dict(row)
-                
-                if device_id:
-                    # Nếu có giá riêng thì lấy, không thì giữ giá gốc
-                    if 'custom_price' in p and p['custom_price'] is not None:
-                        p['price'] = p['custom_price']
-                        
-                    # Nếu units_left bị None (do chưa sync kho), gán bằng 0
-                    if 'units_left' in p and p['units_left'] is None:
-                        p['units_left'] = 0
+            rows = dict_fetchall(cursor)
+        finally:
+            conn.close()
 
-                p.pop('custom_price', None)
-                final_list.append(p)
+        final_list = []
+        for p in rows:
+            if device_id:
+                # Nếu có giá riêng thì lấy, không thì giữ giá gốc
+                if p.get('custom_price') is not None:
+                    p['price'] = p['custom_price']
+                # Nếu units_left bị None (do chưa sync kho), gán bằng 0
+                if p.get('units_left') is None:
+                    p['units_left'] = 0
+            p.pop('custom_price', None)
+            final_list.append(p)
 
         return jsonify({'success': True, 'products': final_list})
     except Exception as e:
@@ -327,89 +383,83 @@ def getProducts():
 # 3. API GIAO DỊCH
 # =============================================================================
 
-# --- Thay thế trong file app.py ---
-
-# --- TRONG FILE app.py ---
-
 @app.route('/api/transactions/record', methods=['POST'])
 def recordTransaction():
     try:
         data = request.get_json()
-        # Lấy device_id
         device_id = data.get('device_id') or request.headers.get('X-Device-ID') or 'UNKNOWN'
-        
+
         total_amount = data['total_amount']
         items = data['items']
         customer_info = data.get('customer_info')
-        
-        print(f"DEBUG: Nhận đơn hàng từ Device: {device_id}")
 
-        with dbLock, getDatabaseConnection() as conn:
+        conn = getDatabaseConnection()
+        try:
             cursor = conn.cursor()
-            
-            # 1. Lưu transaction (Giữ nguyên)
+
+            # 1. Lưu transaction
             transaction_id = f"trans_{uuid.uuid4().hex[:10]}"
             items_str = json.dumps(items)
             now_iso = datetime.now(timezone.utc).isoformat()
             user_id = customer_info.get('user_id') if customer_info else None
-            
+
             cursor.execute("""
                 INSERT INTO transactions (transaction_id, total_amount, items, user_id, device_id, payment_status, created_at)
-                VALUES (?, ?, ?, ?, ?, 'completed', ?)
+                VALUES (%s, %s, %s, %s, %s, 'completed', %s)
             """, (transaction_id, total_amount, items_str, user_id, device_id, now_iso))
-            
-            # 2. Xử lý kho (Giữ nguyên logic trừ kho)
+
+            # 2. Xử lý kho
             for item in items:
                 p_name = item.get('product_name') or item.get('name') or item.get('item_name')
                 qty = item.get('quantity', 1)
-                
+
                 if p_name:
                     # Trừ kho riêng
                     cursor.execute("""
-                        UPDATE device_inventory 
-                        SET units_left = units_left - ? 
-                        WHERE item_name = ? AND device_id = ?
+                        UPDATE device_inventory
+                        SET units_left = units_left - %s
+                        WHERE item_name = %s AND device_id = %s
                     """, (qty, p_name, device_id))
-                    
+
                     # Cộng tổng bán
                     cursor.execute("""
-                        UPDATE inventory 
-                        SET units_sold = units_sold + ? 
-                        WHERE item_name = ?
+                        UPDATE inventory
+                        SET units_sold = units_sold + %s
+                        WHERE item_name = %s
                     """, (qty, p_name))
 
-            # 3. [THAY ĐỔI QUAN TRỌNG] Cập nhật điểm: KHÔNG TÍNH TOÁN, CHỈ GHI ĐÈ
+            # 3. Cập nhật điểm: KHÔNG TÍNH TOÁN, CHỈ GHI ĐÈ
             current_user_points = 0
-            
+
             if user_id and customer_info:
-                # Lấy điểm Client gửi lên (Client là nơi quyết định số điểm)
                 client_points = customer_info.get('current_points')
 
                 if client_points is not None:
-                    # Ghi đè điểm từ Client vào Server ngay lập tức
                     cursor.execute("""
-                        UPDATE users 
-                        SET points = ?, updated_at = ? 
-                        WHERE user_id = ?
+                        UPDATE users
+                        SET points = %s, updated_at = %s
+                        WHERE user_id = %s
                     """, (client_points, now_iso, user_id))
-                    
                     current_user_points = client_points
-                    print(f"✅ UPDATE POINT: User {user_id} đồng bộ thành {client_points} điểm (Từ Client)")
                 else:
-                    # Nếu Client quên gửi điểm, lấy điểm hiện tại trong DB để trả về (không cộng thêm gì cả)
-                    row = cursor.execute("SELECT points FROM users WHERE user_id = ?", (user_id,)).fetchone()
+                    cursor.execute("SELECT points FROM users WHERE user_id = %s", (user_id,))
+                    row = cursor.fetchone()
                     if row:
-                        current_user_points = row['points']
+                        current_user_points = row[0]
 
             conn.commit()
+        except Exception:
+            conn.rollback()
+            raise
+        finally:
+            conn.close()
 
         logSystemEvent('transaction', f'Recorded {transaction_id} from {device_id}')
-        
-        # Trả về điểm mới nhất (chính là điểm client vừa gửi) để confirm
+
         return jsonify({
-            'success': True, 
+            'success': True,
             'transaction_id': transaction_id,
-            'new_points': current_user_points 
+            'new_points': current_user_points
         })
 
     except Exception as e:
@@ -425,30 +475,36 @@ def list_transactions():
         device_id = request.args.get('device_id')
         user_id = request.args.get('user_id')
 
-        with dbLock, getDatabaseConnection() as conn:
+        conn = getDatabaseConnection()
+        try:
+            cursor = conn.cursor()
             query = "SELECT * FROM transactions"
-            count_query = "SELECT COUNT(*) as total FROM transactions"
+            count_query = "SELECT COUNT(*) FROM transactions"
             conditions = []
             params = []
 
             if device_id:
-                conditions.append("device_id = ?")
+                conditions.append("device_id = %s")
                 params.append(device_id)
             if user_id:
-                conditions.append("user_id = ?")
+                conditions.append("user_id = %s")
                 params.append(user_id)
 
             if conditions:
                 clause = " WHERE " + " AND ".join(conditions)
                 query += clause
                 count_query += clause
-            
-            total = conn.execute(count_query, params).fetchone()['total']
-            
-            query += " ORDER BY created_at DESC LIMIT ? OFFSET ?"
+
+            cursor.execute(count_query, params)
+            total = cursor.fetchone()[0]
+
+            query += " ORDER BY created_at DESC LIMIT %s OFFSET %s"
             params.extend([limit, offset])
 
-            trans = [dict(row) for row in conn.execute(query, params).fetchall()]
+            cursor.execute(query, params)
+            trans = dict_fetchall(cursor)
+        finally:
+            conn.close()
 
         return jsonify({'success': True, 'total': total, 'transactions': trans})
     except Exception as e:
@@ -458,81 +514,83 @@ def list_transactions():
 def get_inventory_stats():
     """Admin: Xem thống kê bán chạy"""
     try:
-        with dbLock, getDatabaseConnection() as conn:
-            stats = conn.execute("SELECT item_name, units_sold FROM inventory ORDER BY units_sold DESC").fetchall()
-            result = {row['item_name']: row['units_sold'] for row in stats}
+        conn = getDatabaseConnection()
+        try:
+            cursor = conn.cursor()
+            cursor.execute("SELECT item_name, units_sold FROM inventory ORDER BY units_sold DESC")
+            rows = dict_fetchall(cursor)
+            result = {row['item_name']: row['units_sold'] for row in rows}
+        finally:
+            conn.close()
 
         return jsonify({'success': True, 'stats': result})
     except Exception as e:
         return jsonify({'success': False}), 500
 
 # =============================================================================
-# 4. API CẬP NHẬT TỆN SP, GIÁ, SỐ LƯỢNG THEO YÊU CẦU
+# 4. API CẬP NHẬT TÊN SP, GIÁ, SỐ LƯỢNG THEO YÊU CẦU
 # =============================================================================
 
 @app.route('/api/admin/update_product', methods=['POST'])
 def admin_update_product():
     """
     API dành cho Dashboard Streamlit cập nhật thông tin sản phẩm.
-    Hỗ trợ: Đổi tên (nguy hiểm), Đổi giá, Cập nhật tồn kho (Device).
+    Hỗ trợ: Đổi tên, Đổi giá, Cập nhật tồn kho (Device).
     """
     try:
         data = request.get_json()
         old_name = data.get('old_name')
-        new_name = data.get('new_name') # Nếu đổi tên
+        new_name = data.get('new_name')
         new_price = data.get('price')
-        add_stock = data.get('add_stock', 0) # Số lượng cộng thêm
-        device_id = data.get('device_id')    # Máy nào được cộng kho
-        
-        with dbLock, getDatabaseConnection() as conn:
+        add_stock = data.get('add_stock', 0)
+        device_id = data.get('device_id')
+
+        conn = getDatabaseConnection()
+        try:
             cursor = conn.cursor()
-            
-            # 1. Xử lý ĐỔI TÊN (Phức tạp nhất vì liên quan nhiều bảng)
+
+            # 1. Xử lý ĐỔI TÊN
             if old_name and new_name and old_name != new_name:
-                # Kiểm tra tên mới có trùng không
-                exists = cursor.execute("SELECT 1 FROM inventory WHERE item_name = ?", (new_name,)).fetchone()
-                if exists:
+                cursor.execute("SELECT 1 FROM inventory WHERE item_name = %s", (new_name,))
+                if cursor.fetchone():
                     return jsonify({'success': False, 'message': 'Tên sản phẩm mới đã tồn tại!'}), 400
-                
-                # Cập nhật bảng inventory (Master)
-                cursor.execute("UPDATE inventory SET item_name = ? WHERE item_name = ?", (new_name, old_name))
-                # Cập nhật bảng device_inventory
-                cursor.execute("UPDATE device_inventory SET item_name = ? WHERE item_name = ?", (new_name, old_name))
-                # Cập nhật bảng device_pricing
-                cursor.execute("UPDATE device_pricing SET item_name = ? WHERE item_name = ?", (new_name, old_name))
-                
-                # Lưu ý: Không đổi tên trong bảng transactions để giữ lịch sử gốc (hoặc đổi tùy nhu cầu)
+
+                cursor.execute("UPDATE inventory SET item_name = %s WHERE item_name = %s", (new_name, old_name))
+                cursor.execute("UPDATE device_inventory SET item_name = %s WHERE item_name = %s", (new_name, old_name))
+                cursor.execute("UPDATE device_pricing SET item_name = %s WHERE item_name = %s", (new_name, old_name))
                 target_name = new_name
             else:
                 target_name = old_name
 
             # 2. Xử lý ĐỔI GIÁ (Master Data)
             if new_price is not None:
-                cursor.execute("UPDATE inventory SET price = ? WHERE item_name = ?", (new_price, target_name))
+                cursor.execute("UPDATE inventory SET price = %s WHERE item_name = %s", (new_price, target_name))
 
             # 3. Xử lý CẬP NHẬT KHO (Device Inventory)
-            # Chỉ cập nhật nếu có device_id và số lượng add_stock khác 0
             if device_id and add_stock != 0:
-                # Kiểm tra xem máy đó đã có sản phẩm này trong kho chưa
-                row = cursor.execute("SELECT units_left FROM device_inventory WHERE device_id = ? AND item_name = ?", (device_id, target_name)).fetchone()
-                
+                cursor.execute("SELECT units_left FROM device_inventory WHERE device_id = %s AND item_name = %s", (device_id, target_name))
+                row = cursor.fetchone()
+
                 now_iso = datetime.now(timezone.utc).isoformat()
                 if row:
-                    # Đã có -> Cộng dồn
                     cursor.execute("""
-                        UPDATE device_inventory 
-                        SET units_left = units_left + ?, last_updated = ?
-                        WHERE device_id = ? AND item_name = ?
+                        UPDATE device_inventory
+                        SET units_left = units_left + %s, last_updated = %s
+                        WHERE device_id = %s AND item_name = %s
                     """, (add_stock, now_iso, device_id, target_name))
                 else:
-                    # Chưa có -> Tạo mới
                     cursor.execute("""
                         INSERT INTO device_inventory (device_id, item_name, units_left, last_updated)
-                        VALUES (?, ?, ?, ?)
+                        VALUES (%s, %s, %s, %s)
                     """, (device_id, target_name, add_stock, now_iso))
 
             conn.commit()
-            
+        except Exception:
+            conn.rollback()
+            raise
+        finally:
+            conn.close()
+
         return jsonify({'success': True, 'message': 'Cập nhật sản phẩm thành công'})
     except Exception as e:
         logger.error(f"Admin Update Error: {e}")
@@ -542,38 +600,42 @@ def admin_update_product():
 def sync_user_profile():
     """
     API nhận thông tin user từ Client gửi lên để đồng bộ (Ghi đè).
-    Dùng cho trường hợp máy bán hàng khởi động hoặc vào màn hình Welcome.
     """
     try:
         data = request.get_json()
         user_id = data.get('user_id')
-        if not user_id: 
+        if not user_id:
             return jsonify({'success': False, 'message': 'Missing user_id'}), 400
 
-        # Lấy các thông tin gửi lên
         full_name = data.get('full_name')
         phone = data.get('phone_number')
         dob = data.get('birthday')
         pwd = data.get('password', '123456')
-        points = data.get('points', 0) # <--- ĐIỂM TỪ LOCAL GỬI LÊN
+        points = data.get('points', 0)
         created_at = data.get('created_at', datetime.now(timezone.utc).isoformat())
         now_iso = datetime.now(timezone.utc).isoformat()
 
-        with dbLock, getDatabaseConnection() as conn:
-            # Câu lệnh SQL "UPSERT": Nếu trùng user_id thì Update, chưa có thì Insert
-            conn.execute("""
+        conn = getDatabaseConnection()
+        try:
+            cursor = conn.cursor()
+            cursor.execute("""
                 INSERT INTO users (user_id, full_name, phone_number, birthday, password, points, status, created_at, updated_at)
-                VALUES (?, ?, ?, ?, ?, ?, 'active', ?, ?)
+                VALUES (%s, %s, %s, %s, %s, %s, 'active', %s, %s)
                 ON CONFLICT(user_id) DO UPDATE SET
-                    full_name = excluded.full_name,
-                    phone_number = excluded.phone_number,
-                    birthday = excluded.birthday,
-                    password = excluded.password,
-                    points = excluded.points,  -- GHI ĐÈ ĐIỂM TỪ LOCAL
-                    updated_at = excluded.updated_at
+                    full_name = EXCLUDED.full_name,
+                    phone_number = EXCLUDED.phone_number,
+                    birthday = EXCLUDED.birthday,
+                    password = EXCLUDED.password,
+                    points = EXCLUDED.points,
+                    updated_at = EXCLUDED.updated_at
             """, (user_id, full_name, phone, dob, pwd, points, created_at, now_iso))
             conn.commit()
-            
+        except Exception:
+            conn.rollback()
+            raise
+        finally:
+            conn.close()
+
         return jsonify({'success': True})
 
     except Exception as e:
@@ -583,5 +645,5 @@ def sync_user_profile():
 # --- KHỞI CHẠY ---
 if __name__ == '__main__':
     create_tables()
-    print("Server Vending Machine (Full Version with Multi-Client) running on port 5000...")
-    app.run(host='0.0.0.0', port=5000, debug=True)
+    print("Server Vending Machine running on port 5000...")
+    app.run(host='0.0.0.0', port=5000, debug=False)
