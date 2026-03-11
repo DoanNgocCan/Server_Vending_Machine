@@ -242,8 +242,18 @@ def get_user_by_id(user_id):
 # =============================================================================
 # 2. API SẢN PHẨM & KHO
 # =============================================================================
-
 @app.route('/api/products/batch_sync', methods=['POST'])
+def batchSyncProducts():
+    """
+    ❌ DEPRECATED - Client KHÔNG ĐƯỢC đẩy master data lên.
+    Chỉ Admin Dashboard mới được tạo/sửa sản phẩm.
+    """
+    return jsonify({
+        'success': False, 
+        'message': 'API deprecated. Use Admin Dashboard to manage products.'
+    }), 403
+
+'''@app.route('/api/products/batch_sync', methods=['POST'])
 def batchSyncProducts():
     """
     Đồng bộ sản phẩm:
@@ -300,6 +310,77 @@ def batchSyncProducts():
         return jsonify({'success': True, 'message': f'Synced {count} items'})
     except Exception as e:
         logger.error(f"Sync Error: {e}")
+        return jsonify({'success': False, 'message': str(e)}), 500 '''
+
+@app.route('/api/admin/create_product', methods=['POST'])
+def admin_create_product():
+    """
+    Admin Dashboard: Tạo sản phẩm mới.
+    Chỉ Admin mới có quyền gọi API này.
+    """
+    try:
+        data = request.get_json()
+        item_name = data.get('item_name')
+        price = data.get('price', 0)
+        cost_price = data.get('cost_price', 0)
+        description = data.get('description', '')
+        
+        if not item_name:
+            return jsonify({'success': False, 'message': 'Thiếu tên sản phẩm'}), 400
+
+        conn = getDatabaseConnection()
+        try:
+            cursor = conn.cursor()
+            cursor.execute("""
+                INSERT INTO inventory (item_name, price, cost_price, description)
+                VALUES (%s, %s, %s, %s)
+                ON CONFLICT(item_name) DO NOTHING
+            """, (item_name, price, cost_price, description))
+            conn.commit()
+        finally:
+            conn.close()
+
+        return jsonify({'success': True, 'message': f'Đã tạo sản phẩm: {item_name}'})
+    except Exception as e:
+        return jsonify({'success': False, 'message': str(e)}), 500
+
+
+@app.route('/api/admin/add_stock', methods=['POST'])
+def admin_add_stock():
+    """
+    Admin Dashboard: Nhập hàng vào kho cho một máy cụ thể.
+    Đây là cách DUY NHẤT để tăng tồn kho.
+    """
+    try:
+        data = request.get_json()
+        device_id = data.get('device_id')
+        item_name = data.get('item_name')
+        quantity = data.get('quantity', 0)
+
+        if not device_id or not item_name or quantity <= 0:
+            return jsonify({'success': False, 'message': 'Thiếu thông tin'}), 400
+
+        now_iso = datetime.now(timezone.utc).isoformat()
+        conn = getDatabaseConnection()
+        try:
+            cursor = conn.cursor()
+            cursor.execute("""
+                INSERT INTO device_inventory (device_id, item_name, units_left, last_updated)
+                VALUES (%s, %s, %s, %s)
+                ON CONFLICT(device_id, item_name) DO UPDATE SET
+                    units_left = device_inventory.units_left + %s,
+                    last_updated = %s
+            """, (device_id, item_name, quantity, now_iso, quantity, now_iso))
+            conn.commit()
+            
+            # Log sự kiện nhập hàng
+            logSystemEvent('stock_added', 
+                f'Added {quantity} units of {item_name} to {device_id}')
+        finally:
+            conn.close()
+
+        return jsonify({'success': True, 'message': f'Đã nhập {quantity} {item_name} cho {device_id}'})
+    except Exception as e:
         return jsonify({'success': False, 'message': str(e)}), 500
 
 @app.route('/api/products/set_custom', methods=['POST'])
@@ -397,55 +478,60 @@ def recordTransaction():
         try:
             cursor = conn.cursor()
 
-            # 1. Lưu transaction
+            # ─── 1. Lưu transaction ───
             transaction_id = f"trans_{uuid.uuid4().hex[:10]}"
             items_str = json.dumps(items)
             now_iso = datetime.now(timezone.utc).isoformat()
             user_id = customer_info.get('user_id') if customer_info else None
 
             cursor.execute("""
-                INSERT INTO transactions (transaction_id, total_amount, items, user_id, device_id, payment_status, created_at)
+                INSERT INTO transactions 
+                (transaction_id, total_amount, items, user_id, device_id, payment_status, created_at)
                 VALUES (%s, %s, %s, %s, %s, 'completed', %s)
             """, (transaction_id, total_amount, items_str, user_id, device_id, now_iso))
 
-            # 2. Xử lý kho
+            # ─── 2. Xử lý kho ───
             for item in items:
                 p_name = item.get('product_name') or item.get('name') or item.get('item_name')
                 qty = item.get('quantity', 1)
 
                 if p_name:
-                    # Trừ kho riêng
+                    # Trừ kho riêng của máy
                     cursor.execute("""
                         UPDATE device_inventory
                         SET units_left = units_left - %s
                         WHERE item_name = %s AND device_id = %s
                     """, (qty, p_name, device_id))
 
-                    # Cộng tổng bán
+                    # Cộng tổng số đã bán (thống kê)
                     cursor.execute("""
                         UPDATE inventory
                         SET units_sold = units_sold + %s
                         WHERE item_name = %s
                     """, (qty, p_name))
 
-            # 3. Cập nhật điểm: KHÔNG TÍNH TOÁN, CHỈ GHI ĐÈ
-            current_user_points = 0
+            # ─── 3. Cập nhật điểm: SERVER TỰ TÍNH ───
+            current_user_points = 0  # ✅ Khởi tạo mặc định
 
-            if user_id and customer_info:
-                client_points = customer_info.get('current_points')
+            if user_id:
+                # Server tự tính điểm dựa trên số tiền
+                points_earned = int(total_amount / 1000)
 
-                if client_points is not None:
-                    cursor.execute("""
-                        UPDATE users
-                        SET points = %s, updated_at = %s
-                        WHERE user_id = %s
-                    """, (client_points, now_iso, user_id))
-                    current_user_points = client_points
-                else:
-                    cursor.execute("SELECT points FROM users WHERE user_id = %s", (user_id,))
-                    row = cursor.fetchone()
-                    if row:
-                        current_user_points = row[0]
+                # Cộng điểm và cập nhật thời gian
+                cursor.execute("""
+                    UPDATE users 
+                    SET points = points + %s, updated_at = %s
+                    WHERE user_id = %s
+                """, (points_earned, now_iso, user_id))
+
+                # Đọc lại điểm mới nhất để trả về cho Client
+                cursor.execute(
+                    "SELECT points FROM users WHERE user_id = %s", 
+                    (user_id,)
+                )
+                row = cursor.fetchone()
+                if row:
+                    current_user_points = row[0]
 
             conn.commit()
         except Exception:
@@ -465,7 +551,6 @@ def recordTransaction():
     except Exception as e:
         logger.error(f"Transaction Error: {e}")
         return jsonify({'success': False, 'message': str(e)}), 500
-
 @app.route('/api/transactions', methods=['GET'])
 def list_transactions():
     """Admin: Xem lịch sử giao dịch"""
@@ -599,7 +684,8 @@ def admin_update_product():
 @app.route('/api/user/sync_profile', methods=['POST'])
 def sync_user_profile():
     """
-    API nhận thông tin user từ Client gửi lên để đồng bộ (Ghi đè).
+    API nhận thông tin user từ Client gửi lên để đồng bộ.
+    CHỈ cập nhật thông tin cá nhân, KHÔNG ghi đè điểm.
     """
     try:
         data = request.get_json()
@@ -611,7 +697,6 @@ def sync_user_profile():
         phone = data.get('phone_number')
         dob = data.get('birthday')
         pwd = data.get('password', '123456')
-        points = data.get('points', 0)
         created_at = data.get('created_at', datetime.now(timezone.utc).isoformat())
         now_iso = datetime.now(timezone.utc).isoformat()
 
@@ -620,15 +705,14 @@ def sync_user_profile():
             cursor = conn.cursor()
             cursor.execute("""
                 INSERT INTO users (user_id, full_name, phone_number, birthday, password, points, status, created_at, updated_at)
-                VALUES (%s, %s, %s, %s, %s, %s, 'active', %s, %s)
+                VALUES (%s, %s, %s, %s, %s, 0, 'active', %s, %s)
                 ON CONFLICT(user_id) DO UPDATE SET
                     full_name = EXCLUDED.full_name,
                     phone_number = EXCLUDED.phone_number,
                     birthday = EXCLUDED.birthday,
                     password = EXCLUDED.password,
-                    points = EXCLUDED.points,
                     updated_at = EXCLUDED.updated_at
-            """, (user_id, full_name, phone, dob, pwd, points, created_at, now_iso))
+            """, (user_id, full_name, phone, dob, pwd, created_at, now_iso))
             conn.commit()
         except Exception:
             conn.rollback()
