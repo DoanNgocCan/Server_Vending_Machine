@@ -1,19 +1,20 @@
 # dashboard/services.py
+import os
 import requests
 import streamlit as st
 import pandas as pd
 
-# API_URL = "http://localhost:5000" # Dùng local khi dev
-API_URL = "https://rpi.vietseedscampaign.com" # Dùng domain thật
+API_URL = os.environ.get('API_URL', 'http://web:5000')
 
-@st.cache_data(ttl=60) # Giảm cache xuống 1 phút để cập nhật nhanh hơn
+@st.cache_data(ttl=60)
 def fetch_all_transactions():
     try:
         response = requests.get(f"{API_URL}/api/transactions?limit=10000")
         if response.status_code == 200:
             return response.json().get('transactions', [])
         return []
-    except Exception: return []
+    except Exception:
+        return []
 
 @st.cache_data(ttl=60)
 def fetch_products(device_id=None):
@@ -26,12 +27,12 @@ def fetch_products(device_id=None):
         headers = {}
         if device_id:
             headers = {"X-Device-ID": device_id}
-            
         response = requests.get(f"{API_URL}/api/products", headers=headers)
         if response.status_code == 200:
             return response.json().get('products', [])
         return []
-    except Exception: return []
+    except Exception:
+        return []
 
 @st.cache_data(ttl=60)
 def fetch_users():
@@ -40,7 +41,8 @@ def fetch_users():
         if response.status_code == 200:
             return response.json().get('users', [])
         return []
-    except Exception: return []
+    except Exception:
+        return []
 
 def update_product_info(old_name, new_name, price, add_stock, device_id):
     """Gọi API Admin để cập nhật sản phẩm"""
