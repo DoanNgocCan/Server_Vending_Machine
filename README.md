@@ -69,8 +69,13 @@ Server_Vending_Machine/
 ├── server/               # Flask API
 │   ├── Dockerfile
 │   ├── requirements.txt
-│   ├── app.py
-│   └── utils.py
+│   ├── app.py            # Entry point: Flask setup & blueprint registration
+│   ├── database.py       # DB connection helpers & table creation
+│   ├── utils.py
+│   └── routes/           # API route modules (Flask Blueprints)
+│       ├── users.py      # /api/user* endpoints
+│       ├── products.py   # /api/products* & /api/admin/* endpoints
+│       └── transactions.py # /api/transactions* & /api/inventory/stats
 ├── dashboard/            # Streamlit Dashboard
 │   ├── Dockerfile
 │   ├── requirements.txt

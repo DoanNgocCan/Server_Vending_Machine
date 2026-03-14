@@ -1,0 +1,111 @@
+# --- Database Connection & Table Setup ---
+
+import os
+import logging
+import psycopg2
+
+logger = logging.getLogger(__name__)
+
+DATABASE_URL = os.environ.get('DATABASE_URL', 'postgresql://vending:vending123@localhost:5432/vending_machine')
+
+
+def getDatabaseConnection():
+    """Thiết lập kết nối đến CSDL PostgreSQL."""
+    return psycopg2.connect(DATABASE_URL)
+
+
+def dict_fetchone(cursor):
+    """Trả về một hàng dưới dạng dict."""
+    row = cursor.fetchone()
+    if row is None:
+        return None
+    columns = [desc[0] for desc in cursor.description]
+    return dict(zip(columns, row))
+
+
+def dict_fetchall(cursor):
+    """Trả về tất cả hàng dưới dạng list of dict."""
+    columns = [desc[0] for desc in cursor.description]
+    return [dict(zip(columns, row)) for row in cursor.fetchall()]
+
+
+def create_tables():
+    """Tạo các bảng CSDL cần thiết."""
+    conn = getDatabaseConnection()
+    try:
+        cursor = conn.cursor()
+
+        # 1. Bảng users
+        cursor.execute("""
+            CREATE TABLE IF NOT EXISTS users (
+                user_id TEXT PRIMARY KEY,
+                full_name TEXT NOT NULL,
+                phone_number TEXT UNIQUE NOT NULL,
+                birthday TEXT,
+                password TEXT NOT NULL,
+                points INTEGER DEFAULT 0,
+                status TEXT DEFAULT 'active',
+                created_at TEXT NOT NULL,
+                updated_at TEXT NOT NULL
+            )
+        """)
+
+        # 2. Bảng inventory (MASTER DATA)
+        cursor.execute("""
+            CREATE TABLE IF NOT EXISTS inventory (
+                id SERIAL PRIMARY KEY,
+                item_name TEXT UNIQUE NOT NULL,
+                price REAL NOT NULL,
+                units_sold INTEGER DEFAULT 0,
+                cost_price REAL DEFAULT 0,
+                description TEXT
+            )
+        """)
+
+        # 3. Bảng device_inventory (KHO RIÊNG TỪNG MÁY)
+        cursor.execute("""
+            CREATE TABLE IF NOT EXISTS device_inventory (
+                id SERIAL PRIMARY KEY,
+                device_id TEXT NOT NULL,
+                item_name TEXT NOT NULL,
+                units_left INTEGER DEFAULT 0,
+                last_updated TEXT,
+                UNIQUE(device_id, item_name)
+            )
+        """)
+
+        # 4. Bảng transactions
+        cursor.execute("""
+            CREATE TABLE IF NOT EXISTS transactions (
+                transaction_id TEXT PRIMARY KEY,
+                user_id TEXT,
+                device_id TEXT,
+                items TEXT,
+                total_amount REAL NOT NULL,
+                payment_method TEXT,
+                payment_status TEXT,
+                created_at TEXT NOT NULL,
+                paid_at TEXT
+            )
+        """)
+
+        # 5. Bảng giá riêng (Custom Price)
+        cursor.execute("""
+            CREATE TABLE IF NOT EXISTS device_pricing (
+                id SERIAL PRIMARY KEY,
+                device_id TEXT NOT NULL,
+                item_name TEXT NOT NULL,
+                custom_price REAL,
+                custom_cost_price REAL,
+                UNIQUE(device_id, item_name)
+            )
+        """)
+
+        conn.commit()
+        logger.info("Database tables checked/created.")
+    except Exception as e:
+        conn.rollback()
+        logger.error(f"Error creating tables: {e}")
+        raise
+    finally:
+        conn.close()
