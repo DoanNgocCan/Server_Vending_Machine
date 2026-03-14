@@ -1,5 +1,6 @@
 # --- Vending Machine Central Server (Refactored Version) ---
 
+import os
 from flask import Flask, jsonify
 from flask_cors import CORS
 import logging
@@ -17,8 +18,11 @@ from routes.devices import device_bp
 logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(message)s")
 logger = logging.getLogger(__name__)
 
+# Đường dẫn thư mục static (chứa ảnh sản phẩm)
+STATIC_FOLDER = os.path.join(os.path.dirname(__file__), 'static')
+
 # Khởi tạo Flask app
-app = Flask(__name__)
+app = Flask(__name__, static_folder=STATIC_FOLDER)
 CORS(app)
 
 # --- KHỞI TẠO DATABASE ---
