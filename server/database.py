@@ -55,9 +55,30 @@ def create_tables():
                 price REAL NOT NULL,
                 units_sold INTEGER DEFAULT 0,
                 cost_price REAL DEFAULT 0,
-                description TEXT
+                description TEXT,
+                image_filename TEXT,
+                image_url TEXT,
+                created_at TIMESTAMP DEFAULT NOW(),
+                updated_at TIMESTAMP DEFAULT NOW()
             )
         """)
+
+        # Migration: add image + timestamp columns to existing inventory tables
+        _ALLOWED_MIGRATIONS = {
+            "image_filename": "TEXT",
+            "image_url":      "TEXT",
+            "created_at":     "TIMESTAMP DEFAULT NOW()",
+            "updated_at":     "TIMESTAMP DEFAULT NOW()",
+        }
+        for col, definition in _ALLOWED_MIGRATIONS.items():
+            cursor.execute("""
+                SELECT 1 FROM information_schema.columns
+                WHERE table_name = 'inventory' AND column_name = %s
+            """, (col,))
+            if not cursor.fetchone():
+                # col and definition are from a hardcoded allowlist — safe to interpolate
+                cursor.execute(f"ALTER TABLE inventory ADD COLUMN {col} {definition}")
+                logger.info("Migration: added column '%s' to inventory", col)
 
         # 3. Bảng device_inventory (KHO RIÊNG TỪNG MÁY)
         cursor.execute("""
