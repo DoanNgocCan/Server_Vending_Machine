@@ -1,9 +1,14 @@
-from flask import Blueprint, request, jsonify
+from flask import Blueprint, request, jsonify, send_from_directory
 from datetime import datetime, timezone
 import logging
+import os
+import uuid
 
 from database import getDatabaseConnection, dict_fetchall
 from utils import logSystemEvent
+
+IMAGES_DIR = os.environ.get('IMAGES_DIR', '/app/images')
+os.makedirs(IMAGES_DIR, exist_ok=True)
 
 logger = logging.getLogger(__name__)
 
@@ -224,3 +229,109 @@ def admin_update_product():
     except Exception as e:
         logger.error(f"Admin Update Error: {e}")
         return jsonify({'success': False, 'message': str(e)}), 500
+
+
+@product_bp.route('/api/admin/products/<string:item_name>', methods=['DELETE'])
+def admin_delete_product(item_name):
+    """Admin: Xóa sản phẩm khỏi master data và tất cả kho máy."""
+    try:
+        conn = getDatabaseConnection()
+        try:
+            cursor = conn.cursor()
+            # Lấy image_url trước khi xóa để có thể xóa file ảnh
+            cursor.execute("SELECT image_url FROM inventory WHERE item_name = %s", (item_name,))
+            row = cursor.fetchone()
+            if not row:
+                return jsonify({'success': False, 'message': 'Sản phẩm không tồn tại'}), 404
+
+            image_url = row[0]
+
+            cursor.execute("DELETE FROM device_pricing WHERE item_name = %s", (item_name,))
+            cursor.execute("DELETE FROM device_inventory WHERE item_name = %s", (item_name,))
+            cursor.execute("DELETE FROM inventory WHERE item_name = %s", (item_name,))
+            conn.commit()
+            logSystemEvent('product_deleted', f'Deleted product: {item_name}')
+        except Exception:
+            conn.rollback()
+            raise
+        finally:
+            conn.close()
+
+        # Xóa file ảnh nếu có
+        if image_url:
+            filename = os.path.basename(image_url)
+            filepath = os.path.join(IMAGES_DIR, filename)
+            if os.path.exists(filepath):
+                os.remove(filepath)
+
+        return jsonify({'success': True, 'message': f'Đã xóa sản phẩm: {item_name}'})
+    except Exception as e:
+        logger.error(f"Admin Delete Product Error: {e}")
+        return jsonify({'success': False, 'message': str(e)}), 500
+
+
+ALLOWED_EXTENSIONS = {'jpg', 'jpeg', 'png', 'webp'}
+
+
+def _allowed_file(filename):
+    return '.' in filename and filename.rsplit('.', 1)[1].lower() in ALLOWED_EXTENSIONS
+
+
+@product_bp.route('/api/admin/upload_image', methods=['POST'])
+def admin_upload_image():
+    """Admin: Upload ảnh cho sản phẩm."""
+    try:
+        item_name = request.form.get('item_name')
+        if not item_name:
+            return jsonify({'success': False, 'message': 'Thiếu item_name'}), 400
+
+        if 'image' not in request.files:
+            return jsonify({'success': False, 'message': 'Thiếu file ảnh'}), 400
+
+        file = request.files['image']
+        if file.filename == '':
+            return jsonify({'success': False, 'message': 'Chưa chọn file'}), 400
+
+        if not _allowed_file(file.filename):
+            return jsonify({'success': False, 'message': 'Định dạng không hỗ trợ (jpg, jpeg, png, webp)'}), 400
+
+        ext = file.filename.rsplit('.', 1)[1].lower()
+        unique_name = f"{uuid.uuid4().hex}.{ext}"
+        save_path = os.path.join(IMAGES_DIR, unique_name)
+        file.save(save_path)
+
+        image_url = f"/api/images/{unique_name}"
+
+        conn = getDatabaseConnection()
+        try:
+            cursor = conn.cursor()
+            # Xóa ảnh cũ nếu có
+            cursor.execute("SELECT image_url FROM inventory WHERE item_name = %s", (item_name,))
+            existing = cursor.fetchone()
+            if existing and existing[0]:
+                old_filename = os.path.basename(existing[0])
+                old_path = os.path.join(IMAGES_DIR, old_filename)
+                if os.path.exists(old_path):
+                    os.remove(old_path)
+
+            cursor.execute("UPDATE inventory SET image_url = %s WHERE item_name = %s", (image_url, item_name))
+            conn.commit()
+        except Exception:
+            conn.rollback()
+            if os.path.exists(save_path):
+                os.remove(save_path)
+            raise
+        finally:
+            conn.close()
+
+        logSystemEvent('image_uploaded', f'Image uploaded for {item_name}: {unique_name}')
+        return jsonify({'success': True, 'image_url': image_url, 'filename': unique_name})
+    except Exception as e:
+        logger.error(f"Upload Image Error: {e}")
+        return jsonify({'success': False, 'message': str(e)}), 500
+
+
+@product_bp.route('/api/images/<path:filename>', methods=['GET'])
+def serve_image(filename):
+    """Serve ảnh sản phẩm."""
+    return send_from_directory(IMAGES_DIR, filename)

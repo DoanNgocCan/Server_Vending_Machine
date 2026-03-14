@@ -24,6 +24,9 @@ services:
     restart: always
     environment:
       DATABASE_URL: postgresql://${POSTGRES_USER:-vending}:${POSTGRES_PASSWORD:-vending123}@db:5432/${POSTGRES_DB:-vending_machine}
+      IMAGES_DIR: /app/images
+    volumes:
+      - product_images:/app/images
     ports:
       - "5000:5000"
     depends_on:
@@ -36,6 +39,8 @@ services:
     restart: always
     environment:
       API_URL: ${API_URL:-http://web:5000}
+      ADMIN_USERNAME: ${ADMIN_USERNAME:-admin}
+      ADMIN_PASSWORD: ${ADMIN_PASSWORD:-admin123}
     ports:
       - "8501:8501"
     depends_on:
@@ -54,3 +59,4 @@ services:
 
 volumes:
   postgres_data:
+  product_images:

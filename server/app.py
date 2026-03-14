@@ -11,6 +11,7 @@ from database import create_tables
 from routes.users import user_bp
 from routes.products import product_bp
 from routes.transactions import trans_bp
+from routes.devices import device_bp
 
 # --- CẤU HÌNH LOGGING ---
 logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(message)s")
@@ -31,6 +32,7 @@ except Exception as e:
 app.register_blueprint(user_bp)
 app.register_blueprint(product_bp)
 app.register_blueprint(trans_bp)
+app.register_blueprint(device_bp)
 
 # --- ROUTE CƠ BẢN ---
 @app.route('/')

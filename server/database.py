@@ -98,6 +98,11 @@ def create_tables():
             )
         """)
 
+        # 6. Thêm cột image_url vào inventory nếu chưa có
+        cursor.execute("""
+            ALTER TABLE inventory ADD COLUMN IF NOT EXISTS image_url TEXT
+        """)
+
         conn.commit()
         logger.info("Database tables checked/created successfully.")
     except Exception as e:
