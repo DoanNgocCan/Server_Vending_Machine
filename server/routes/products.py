@@ -2,11 +2,14 @@ from flask import Blueprint, request, jsonify, send_from_directory
 from datetime import datetime, timezone
 import logging
 import os
-import time
+import uuid
 
 from database import getDatabaseConnection, dict_fetchall, dict_fetchone
 from utils import logSystemEvent
 from mqtt_publisher import get_publisher
+
+IMAGES_DIR = os.environ.get('IMAGES_DIR', '/app/images')
+os.makedirs(IMAGES_DIR, exist_ok=True)
 
 logger = logging.getLogger(__name__)
 
@@ -344,154 +347,107 @@ def admin_update_product():
         return jsonify({'success': False, 'message': str(e)}), 500
 
 
-# ---------------------------------------------------------------------------
-# GET /api/products/<product_id>  – single product detail
-# ---------------------------------------------------------------------------
-
-@product_bp.route('/api/products/<product_id>', methods=['GET'])
-def get_single_product(product_id):
-    """
-    Return complete details for one product (by item_name or numeric id).
-    Called by the client after receiving an MQTT data_changed notification.
-    """
+@product_bp.route('/api/admin/products/<string:item_name>', methods=['DELETE'])
+def admin_delete_product(item_name):
+    """Admin: Xóa sản phẩm khỏi master data và tất cả kho máy."""
     try:
-        device_id = request.headers.get('X-Device-ID')
         conn = getDatabaseConnection()
         try:
             cursor = conn.cursor()
-            if device_id:
-                query = """
-                    SELECT i.id, i.item_name, i.price, i.description,
-                           i.image_filename, i.image_url, i.created_at, i.updated_at,
-                           COALESCE(d.units_left, 0) as units_left,
-                           dp.custom_price
-                    FROM inventory i
-                    LEFT JOIN device_inventory d
-                           ON i.item_name = d.item_name AND d.device_id = %s
-                    LEFT JOIN device_pricing dp
-                           ON i.item_name = dp.item_name AND dp.device_id = %s
-                    WHERE i.item_name = %s OR i.id::TEXT = %s
-                """
-                cursor.execute(query, (device_id, device_id, product_id, product_id))
-            else:
-                cursor.execute(
-                    "SELECT id, item_name, price, cost_price, description, "
-                    "image_filename, image_url, created_at, updated_at "
-                    "FROM inventory WHERE item_name = %s OR id::TEXT = %s",
-                    (product_id, product_id),
-                )
-            product = dict_fetchone(cursor)
-        finally:
-            conn.close()
-
-        if not product:
-            return jsonify({'success': False, 'message': 'Product not found'}), 404
-
-        if device_id:
-            if product.get('custom_price') is not None:
-                product['price'] = product['custom_price']
-        product.pop('custom_price', None)
-        for ts_field in ('created_at', 'updated_at'):
-            if product.get(ts_field) and hasattr(product[ts_field], 'isoformat'):
-                product[ts_field] = product[ts_field].isoformat()
-
-        return jsonify({'success': True, 'product': product})
-    except Exception as e:
-        logger.error("Get Single Product Error: %s", e)
-        return jsonify({'success': False, 'message': str(e)}), 500
-
-
-# ---------------------------------------------------------------------------
-# GET /api/images/<filename>  – serve product images
-# ---------------------------------------------------------------------------
-
-@product_bp.route('/api/images/<filename>', methods=['GET'])
-def serve_image(filename):
-    """
-    Serve a product image from server/static/images/.
-    Returns 404 if the file does not exist.
-    """
-    safe_name = _secure_basename(filename)
-    if not safe_name or not _allowed_file(safe_name):
-        return jsonify({'success': False, 'message': 'Invalid filename'}), 400
-
-    abs_images_dir = os.path.abspath(IMAGES_DIR)
-    file_path = os.path.join(abs_images_dir, safe_name)
-
-    if not os.path.isfile(file_path):
-        return jsonify({'success': False, 'message': 'Image not found'}), 404
-
-    ext  = safe_name.rsplit('.', 1)[1].lower()
-    mime = _MIME_MAP.get(ext, 'application/octet-stream')
-    return send_from_directory(abs_images_dir, safe_name, mimetype=mime)
-
-
-# ---------------------------------------------------------------------------
-# POST /api/admin/upload_image  – upload / replace image for a product
-# ---------------------------------------------------------------------------
-
-@product_bp.route('/api/admin/upload_image', methods=['POST'])
-def admin_upload_image():
-    """
-    Upload or replace the image for an existing product.
-    Form fields: product_id (required), image (file, required).
-    """
-    try:
-        product_id = request.form.get('product_id', '').strip()
-        image_file = request.files.get('image')
-
-        if not product_id:
-            return jsonify({'success': False, 'message': 'product_id is required'}), 400
-
-        try:
-            filename, image_url = _save_image(image_file, product_id)
-        except ValueError as ve:
-            return jsonify({'success': False, 'message': str(ve)}), 400
-
-        conn = getDatabaseConnection()
-        try:
-            cursor = conn.cursor()
-            # Fetch old image filename to remove stale file
-            cursor.execute(
-                "SELECT image_filename FROM inventory WHERE item_name = %s OR id::TEXT = %s",
-                (product_id, product_id),
-            )
+            # Lấy image_url trước khi xóa để có thể xóa file ảnh
+            cursor.execute("SELECT image_url FROM inventory WHERE item_name = %s", (item_name,))
             row = cursor.fetchone()
             if not row:
-                conn.close()
-                # Clean up the just-saved file
-                try:
-                    os.remove(os.path.join(IMAGES_DIR, filename))
-                except OSError:
-                    pass
-                return jsonify({'success': False, 'message': 'Product not found'}), 404
+                return jsonify({'success': False, 'message': 'Sản phẩm không tồn tại'}), 404
 
-            old_filename = row[0]
+            image_url = row[0]
 
-            cursor.execute(
-                "UPDATE inventory SET image_filename = %s, image_url = %s, updated_at = NOW() "
-                "WHERE item_name = %s OR id::TEXT = %s",
-                (filename, image_url, product_id, product_id),
-            )
+            cursor.execute("DELETE FROM device_pricing WHERE item_name = %s", (item_name,))
+            cursor.execute("DELETE FROM device_inventory WHERE item_name = %s", (item_name,))
+            cursor.execute("DELETE FROM inventory WHERE item_name = %s", (item_name,))
             conn.commit()
+            logSystemEvent('product_deleted', f'Deleted product: {item_name}')
         except Exception:
             conn.rollback()
             raise
         finally:
             conn.close()
 
-        # Remove old image if it exists and differs from the new one
-        if old_filename and old_filename != filename:
-            old_path = os.path.join(IMAGES_DIR, old_filename)
-            try:
-                if os.path.isfile(old_path):
-                    os.remove(old_path)
-            except OSError as oe:
-                logger.warning("Could not remove old image '%s': %s", old_path, oe)
+        # Xóa file ảnh nếu có
+        if image_url:
+            filename = os.path.basename(image_url)
+            filepath = os.path.join(IMAGES_DIR, filename)
+            if os.path.exists(filepath):
+                os.remove(filepath)
 
-        get_publisher().publish_product_modified(product_id)
-
-        return jsonify({'success': True, 'image_filename': filename, 'image_url': image_url})
+        return jsonify({'success': True, 'message': f'Đã xóa sản phẩm: {item_name}'})
     except Exception as e:
-        logger.error("Admin Upload Image Error: %s", e)
+        logger.error(f"Admin Delete Product Error: {e}")
         return jsonify({'success': False, 'message': str(e)}), 500
+
+
+ALLOWED_EXTENSIONS = {'jpg', 'jpeg', 'png', 'webp'}
+
+
+def _allowed_file(filename):
+    return '.' in filename and filename.rsplit('.', 1)[1].lower() in ALLOWED_EXTENSIONS
+
+
+@product_bp.route('/api/admin/upload_image', methods=['POST'])
+def admin_upload_image():
+    """Admin: Upload ảnh cho sản phẩm."""
+    try:
+        item_name = request.form.get('item_name')
+        if not item_name:
+            return jsonify({'success': False, 'message': 'Thiếu item_name'}), 400
+
+        if 'image' not in request.files:
+            return jsonify({'success': False, 'message': 'Thiếu file ảnh'}), 400
+
+        file = request.files['image']
+        if file.filename == '':
+            return jsonify({'success': False, 'message': 'Chưa chọn file'}), 400
+
+        if not _allowed_file(file.filename):
+            return jsonify({'success': False, 'message': 'Định dạng không hỗ trợ (jpg, jpeg, png, webp)'}), 400
+
+        ext = file.filename.rsplit('.', 1)[1].lower()
+        unique_name = f"{uuid.uuid4().hex}.{ext}"
+        save_path = os.path.join(IMAGES_DIR, unique_name)
+        file.save(save_path)
+
+        image_url = f"/api/images/{unique_name}"
+
+        conn = getDatabaseConnection()
+        try:
+            cursor = conn.cursor()
+            # Xóa ảnh cũ nếu có
+            cursor.execute("SELECT image_url FROM inventory WHERE item_name = %s", (item_name,))
+            existing = cursor.fetchone()
+            if existing and existing[0]:
+                old_filename = os.path.basename(existing[0])
+                old_path = os.path.join(IMAGES_DIR, old_filename)
+                if os.path.exists(old_path):
+                    os.remove(old_path)
+
+            cursor.execute("UPDATE inventory SET image_url = %s WHERE item_name = %s", (image_url, item_name))
+            conn.commit()
+        except Exception:
+            conn.rollback()
+            if os.path.exists(save_path):
+                os.remove(save_path)
+            raise
+        finally:
+            conn.close()
+
+        logSystemEvent('image_uploaded', f'Image uploaded for {item_name}: {unique_name}')
+        return jsonify({'success': True, 'image_url': image_url, 'filename': unique_name})
+    except Exception as e:
+        logger.error(f"Upload Image Error: {e}")
+        return jsonify({'success': False, 'message': str(e)}), 500
+
+
+@product_bp.route('/api/images/<path:filename>', methods=['GET'])
+def serve_image(filename):
+    """Serve ảnh sản phẩm."""
+    return send_from_directory(IMAGES_DIR, filename)
