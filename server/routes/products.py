@@ -3,6 +3,7 @@ from datetime import datetime, timezone
 import logging
 import os
 import uuid
+import time
 
 from database import getDatabaseConnection, dict_fetchall, dict_fetchone
 from utils import logSystemEvent
@@ -161,15 +162,20 @@ def admin_add_stock():
         conn = getDatabaseConnection()
         try:
             cursor = conn.cursor()
-            cursor.execute("""
-                INSERT INTO device_inventory (device_id, item_name, units_left, last_updated)
-                VALUES (%s, %s, %s, %s)
-                ON CONFLICT(device_id, item_name) DO UPDATE SET
-                    units_left = device_inventory.units_left + %s,
-                    last_updated = %s
-            """, (device_id, item_name, quantity, now_iso, quantity, now_iso))
+            cursor.execute("SELECT units_left FROM device_inventory WHERE device_id = %s AND item_name = %s", (device_id, item_name))
+            if cursor.fetchone():
+                cursor.execute("""
+                    UPDATE device_inventory 
+                    SET units_left = units_left + %s, last_updated = %s
+                    WHERE device_id = %s AND item_name = %s
+                """, (quantity, now_iso, device_id, item_name))
+            else:
+                cursor.execute("""
+                    INSERT INTO device_inventory (device_id, item_name, units_left, last_updated)
+                    VALUES (%s, %s, %s, %s)
+                """, (device_id, item_name, quantity, now_iso))
+
             conn.commit()
-            
             logSystemEvent('stock_added', f'Added {quantity} units of {item_name} to {device_id}')
         finally:
             conn.close()
@@ -211,11 +217,13 @@ def setDevicePrice():
         conn = getDatabaseConnection()
         try:
             cursor = conn.cursor()
-            cursor.execute("""
-                INSERT INTO device_pricing (device_id, item_name, custom_price)
-                VALUES (%s, %s, %s)
-                ON CONFLICT(device_id, item_name) DO UPDATE SET custom_price = EXCLUDED.custom_price
-            """, (device_id, item_name, price))
+            
+            cursor.execute("SELECT 1 FROM device_pricing WHERE device_id = %s AND item_name = %s", (device_id, item_name))
+            if cursor.fetchone():
+                cursor.execute("UPDATE device_pricing SET custom_price = %s WHERE device_id = %s AND item_name = %s", (price, device_id, item_name))
+            else:
+                cursor.execute("INSERT INTO device_pricing (device_id, item_name, custom_price) VALUES (%s, %s, %s)", (device_id, item_name, price))
+                
             conn.commit()
         except Exception:
             conn.rollback()
@@ -241,10 +249,18 @@ def getProducts():
         try:
             cursor = conn.cursor()
             if device_id:
+                now_iso = datetime.now(timezone.utc).isoformat()
+                cursor.execute("""
+                    INSERT INTO devices (device_id, last_active) 
+                    VALUES (%s, %s)
+                    ON CONFLICT(device_id) DO UPDATE SET last_active = EXCLUDED.last_active
+                """, (device_id, now_iso))
+                conn.commit()
                 query = """
                     SELECT i.item_name, i.price, i.description,
                            i.image_filename, i.image_url, i.created_at,
                            COALESCE(d.units_left, 0) as units_left,
+                           d.slot_number,
                            dp.custom_price
                     FROM inventory i
                     LEFT JOIN device_inventory d ON i.item_name = d.item_name AND d.device_id = %s

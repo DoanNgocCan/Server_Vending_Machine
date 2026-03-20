@@ -1,8 +1,6 @@
-version: '3.9'
-
 services:
   postgres:
-    image: postgres:15-alpine
+    image: postgres:16-alpine
     container_name: vending_postgres
     env_file: .env          # ← Load .env file
     environment:
@@ -10,6 +8,7 @@ services:
       POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
       POSTGRES_DB: ${POSTGRES_DB}
       TZ: ${TZ:-Asia/Ho_Chi_Minh}
+      POSTGRES_INITDB_ARGS: "-c fsync=off"
     volumes:
       - postgres_data:/var/lib/postgresql/data
     ports:
@@ -94,6 +93,9 @@ services:
       TZ: ${TZ:-Asia/Ho_Chi_Minh}
     ports:
       - "8501:8501"
+    volumes:
+      # Ánh xạ chung thư mục ảnh với server để cả 2 cùng đọc/ghi được
+      - ./server/static/images:/app/static/images 
     depends_on:
       - server
       - mosquitto
@@ -105,7 +107,17 @@ services:
       timeout: 10s
       retries: 3
     restart: unless-stopped
-
+  #pgadmin:
+    #image: dpage/pgadmin4:latest
+    #container_name: vending-pgadmin
+    #restart: always
+    #environment:
+      #PGADMIN_DEFAULT_EMAIL: admin@vending.local
+      #PGADMIN_DEFAULT_PASSWORD: admin123
+    #ports:
+      #- "5050:80"
+    #depends_on:
+      #- db
 networks:
   vending_network:
     driver: bridge

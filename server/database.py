@@ -62,6 +62,12 @@ def create_tables():
                 updated_at TIMESTAMP DEFAULT NOW()
             )
         """)
+        cursor.execute("""
+            CREATE TABLE IF NOT EXISTS devices (
+                device_id VARCHAR(50) PRIMARY KEY,
+                last_active TEXT
+            )
+        """)
 
         # Migration: add image + timestamp columns to existing inventory tables
         _ALLOWED_MIGRATIONS = {

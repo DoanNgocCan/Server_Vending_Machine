@@ -4,6 +4,7 @@ Tất cả các trang Streamlit sẽ dùng module này để gọi API.
 """
 import sys
 import os
+
 sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
 
 import logging
@@ -153,9 +154,15 @@ def get_device_inventory(device_id):
     return _get(f"/api/devices/{device_id}/inventory")
 
 
-def update_device_inventory(device_id, item_name, units_left):
+# Ví dụ sửa trong utils/api_client.py
+def update_device_inventory(device_id, item_name, units_left, slot_number):
     """PUT /api/devices/<device_id>/inventory/<item_name>"""
-    return _put(f"/api/devices/{device_id}/inventory/{item_name}", json={"units_left": units_left})
+    payload = {
+        "units_left": units_left,
+        "slot_number": slot_number  # <-- Đã thêm số ô
+    }
+    # Dùng _put thay vì requests.put để tận dụng Retry và SERVER_URL mặc định
+    return _put(f"/api/devices/{device_id}/inventory/{item_name}", json=payload)
 
 
 def set_custom_price(device_id, item_name, price):
@@ -165,7 +172,9 @@ def set_custom_price(device_id, item_name, price):
         "item_name": item_name,
         "price": price,
     })
-
+def remove_product_from_device(device_id, item_name):
+    """DELETE /api/devices/<device_id>/inventory/<item_name> - Gỡ sản phẩm khỏi 1 máy cụ thể"""
+    return _delete(f"/api/devices/{device_id}/inventory/{item_name}")
 
 # ──────────────────────────────────────────────
 # TRANSACTIONS

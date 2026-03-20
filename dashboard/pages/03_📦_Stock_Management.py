@@ -58,13 +58,19 @@ with tab_view:
     show_cols = [c for c in ["device_id", "product_count", "total_units", "last_sync"] if c in df_dev.columns]
     if "last_sync" in df_dev.columns:
         df_dev["last_sync"] = df_dev["last_sync"].apply(format_datetime)
-    st.dataframe(df_dev[show_cols], use_container_width=True,
-                 column_config={
-                     "device_id": st.column_config.TextColumn("ID Máy"),
-                     "product_count": st.column_config.NumberColumn("Số loại SP"),
-                     "total_units": st.column_config.NumberColumn("Tổng tồn kho"),
-                     "last_sync": st.column_config.TextColumn("Đồng bộ lần cuối"),
-                 })
+    # Thay thế đoạn code hiển thị dataframe cũ thành đoạn này:
+    st.dataframe(
+        df_inv[[c for c in ["slot_number", "item_name", "units_left", "trạng_thái", "price", "custom_price", "last_updated"] if c in df_inv.columns]],
+        use_container_width=True,
+        column_config={
+            "slot_number": st.column_config.NumberColumn("Số ô"), # <-- Cột mới
+            "item_name": st.column_config.TextColumn("Sản phẩm"),
+            "units_left": st.column_config.NumberColumn("Tồn kho"),
+            "trạng_thái": st.column_config.TextColumn("Mức độ"),
+            "price": st.column_config.NumberColumn("Giá gốc (₫)", format="%,.0f"),
+            "custom_price": st.column_config.NumberColumn("Giá riêng (₫)", format="%,.0f"),
+        },
+    )
 
     st.markdown("---")
 
@@ -124,36 +130,87 @@ with tab_add:
 # TAB 3: ĐẶT SỐ LƯỢNG CHÍNH XÁC
 # ════════════════════════════════════════════════════════
 with tab_set:
-    st.subheader("✏️ Đặt Số Lượng Tồn Kho Chính Xác")
-    st.warning("⚠️ Thao tác này sẽ **ghi đè** số lượng hiện tại!")
+    st.subheader("✏️ Đặt Số Lượng & Quản Lý Cục Bộ")
+    st.warning("⚠️ Thao tác ở đây chỉ ảnh hưởng đến máy được chọn, không ảnh hưởng đến Master Data.")
 
     col_dev, col_prod = st.columns(2)
     with col_dev:
-        set_dev = st.selectbox("Máy:", device_ids, key="set_dev")
+        set_dev = st.selectbox("Chọn Máy:", device_ids, key="set_dev")
     with col_prod:
-        set_prod = st.selectbox("Sản phẩm:", product_names, key="set_prod")
+        set_prod = st.selectbox("Chọn Sản phẩm:", product_names, key="set_prod")
 
     # Hiển thị tồn kho hiện tại
+    current_qty = 0
+    current_slot = 1  # <-- Thêm biến này
+    is_in_device = False
+    
     if set_dev and set_prod:
         inv_r = get_device_inventory(set_dev)
-        current_qty = 0
         if inv_r.get("success"):
             for item in inv_r.get("inventory", []):
                 if item.get("item_name") == set_prod:
                     current_qty = item.get("units_left", 0)
+                    current_slot = item.get("slot_number") or 1 # <-- Lấy số ô hiện tại
+                    is_in_device = True
                     break
-        st.info(f"Tồn kho hiện tại của **{set_prod}** tại **{set_dev}**: **{current_qty}**")
+                    
+        if is_in_device:
+            st.info(f"Sản phẩm **{set_prod}** đang có ở máy **{set_dev}** tại Ô SỐ: **{current_slot}** (Số lượng: {current_qty})")
+        else:
+            st.info(f"Sản phẩm **{set_prod}** hiện KHÔNG CÓ TRONG KHO của máy **{set_dev}**.")
 
-    with st.form("set_stock_form"):
-        new_qty = st.number_input("Số lượng mới:", min_value=0, step=1, value=0)
-        submitted2 = st.form_submit_button("💾 Cập Nhật", type="primary")
+    st.markdown("---")
+    
+    c1, c2 = st.columns(2)
+    
+    with c1:
+        with st.form("set_stock_form"):
+            st.markdown("**🔄 Cập nhật số lượng & Ô**")
+            new_qty = st.number_input("Số lượng mới:", min_value=0, step=1, value=current_qty)
+            # Thêm selectbox chọn ô vào form này
+            new_slot = st.selectbox("Số ô hiển thị trên máy (1-10):", options=list(range(1, 11)), index=current_slot-1)
+            
+            submitted2 = st.form_submit_button("💾 Lưu Thay Đổi", type="primary")
 
-        if submitted2:
-            with st.spinner("Đang cập nhật..."):
-                result2 = update_device_inventory(set_dev, set_prod, new_qty)
-            if result2.get("success"):
-                st.success(f"✅ {result2.get('message')}")
-                st.cache_data.clear()
-                st.rerun()
-            else:
-                st.error(f"❌ {result2.get('message')}")
+            if submitted2:
+                with st.spinner("Đang cập nhật..."):
+                    # CHÚ Ý: Đã truyền đủ 4 biến vào đây
+                    result2 = update_device_inventory(set_dev, set_prod, new_qty, new_slot)
+                if result2.get("success"):
+                    st.success(f"✅ {result2.get('message', 'Cập nhật thành công!')}")
+                    st.cache_data.clear()
+                    st.rerun()
+                else:
+                    st.error(f"❌ {result2.get('message')}")
+
+    with c2:
+        st.markdown("**🗑️ Gỡ sản phẩm khỏi máy**")
+        st.caption("Sản phẩm sẽ biến mất khỏi màn hình của máy này.")
+        
+        # Chỉ hiện nút gỡ nếu sản phẩm thực sự đang có trong máy đó
+        if is_in_device:
+            if st.button("🗑️ Gỡ khỏi máy này", type="secondary", use_container_width=True):
+                st.session_state["confirm_remove_device"] = f"{set_dev}_{set_prod}"
+                
+            if st.session_state.get("confirm_remove_device") == f"{set_dev}_{set_prod}":
+                st.error(f"Xác nhận gỡ **{set_prod}** khỏi **{set_dev}**?")
+                col_y, col_n = st.columns(2)
+                with col_y:
+                    if st.button("✅ Đồng ý"):
+                        # Import hàm remove vừa viết ở api_client (Nhớ import ở đầu file nhé)
+                        from utils.api_client import remove_product_from_device
+                        res = remove_product_from_device(set_dev, set_prod)
+                        
+                        if res.get("success"):
+                            st.success("✅ Đã gỡ thành công!")
+                            st.session_state.pop("confirm_remove_device", None)
+                            st.cache_data.clear()
+                            st.rerun()
+                        else:
+                            st.error(f"❌ Lỗi: {res.get('message')}")
+                with col_n:
+                    if st.button("❌ Hủy"):
+                        st.session_state.pop("confirm_remove_device", None)
+                        st.rerun()
+        else:
+            st.button("🚫 Không thể gỡ (Chưa có trong máy)", disabled=True, use_container_width=True)
