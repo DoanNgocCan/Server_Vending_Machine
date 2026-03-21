@@ -261,32 +261,3 @@ with tab_edit:
                     if st.button("❌ Hủy bỏ"):
                         st.session_state.pop("confirm_delete_btn", None)
                         st.rerun()
-
-            st.markdown("---")
-            # --- KHU VỰC XÓA SẢN PHẨM ---
-            st.subheader("🗑️ Xóa Sản Phẩm Này")
-            st.warning("⚠️ **Nguy hiểm:** Việc xóa sản phẩm sẽ xóa sản phẩm này khỏi Master Data và tất cả các máy. Hành động này không thể hoàn tác.")
-            
-            # Thêm key=f"del_btn_{sel}"
-            if st.button("🗑️ Xác nhận xóa sản phẩm", type="primary", use_container_width=True, key=f"del_btn_{sel}"):
-                st.session_state["confirm_delete_btn"] = sel
-                
-            if st.session_state.get("confirm_delete_btn") == sel:
-                st.error(f"Bạn có chắc chắn muốn xóa vĩnh viễn **{sel}**?")
-                c1, c2 = st.columns(2)
-                with c1:
-                    # Thêm key=f"yes_{sel}"
-                    if st.button("✅ Vâng, Xóa ngay!", key=f"yes_{sel}"):
-                        result = delete_product(sel)
-                        if result.get("success"):
-                            st.success(f"✅ Đã xóa thành công: {sel}")
-                            st.session_state.pop("confirm_delete_btn", None)
-                            st.cache_data.clear()
-                            st.rerun()
-                        else:
-                            st.error(f"❌ Lỗi: {result.get('message')}")
-                with c2:
-                    # Thêm key=f"no_{sel}"
-                    if st.button("❌ Hủy bỏ", key=f"no_{sel}"):
-                        st.session_state.pop("confirm_delete_btn", None)
-                        st.rerun()
