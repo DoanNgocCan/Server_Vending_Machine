@@ -76,7 +76,7 @@ def update_device_inventory(device_id, item_name):
     try:
         data = request.get_json()
         units_left = data.get('units_left')
-        slot_number = data.get('slot_number') # <-- LẤY SỐ Ô TỪ BODY
+        slot_number = data.get('slot_number')
 
         if units_left is None or slot_number is None:
             return jsonify({'success': False, 'message': 'units_left và slot_number là bắt buộc'}), 400
@@ -95,7 +95,9 @@ def update_device_inventory(device_id, item_name):
             # 1. Kiểm tra xem ô (slot_number) này đã bị sản phẩm KHÁC chiếm chưa
             cursor.execute("SELECT item_name FROM device_inventory WHERE device_id = %s AND slot_number = %s", (device_id, slot_number))
             row = cursor.fetchone()
-            if row and row['item_name'] != item_name:
+            
+            # ĐÃ SỬA LỖI TẠI ĐÂY: Dùng row[0] thay vì row['item_name']
+            if row and row[0] != item_name:
                 # Gỡ sản phẩm cũ khỏi ô này
                 cursor.execute("DELETE FROM device_inventory WHERE device_id = %s AND slot_number = %s", (device_id, slot_number))
             
@@ -118,7 +120,7 @@ def update_device_inventory(device_id, item_name):
             conn.commit()
             logSystemEvent('inventory_update', f'{device_id}: {item_name} set to {units_left}')
 
-            # ======== THÊM MỚI TỪ ĐÂY ĐỂ ĐỒNG BỘ CLIENT ========
+            # ======== ĐỒNG BỘ CLIENT (MQTT) ========
             try:
                 cursor.execute("""
                     SELECT i.price, dp.custom_price 
@@ -126,15 +128,15 @@ def update_device_inventory(device_id, item_name):
                     LEFT JOIN device_pricing dp ON dp.item_name = i.item_name AND dp.device_id = %s
                     WHERE i.item_name = %s
                 """, (device_id, item_name))
-                row = cursor.fetchone()
+                row_price = cursor.fetchone()
                 # Lấy giá riêng của máy (nếu có), không thì lấy giá gốc
-                final_price = row[1] if row and row[1] is not None else (row[0] if row else 0)
+                final_price = row_price[1] if row_price and row_price[1] is not None else (row_price[0] if row_price else 0)
                 
                 from mqtt_publisher import get_publisher
-                get_publisher().publish_product_update(item_name, final_price, int(units_left))
+                get_publisher().publish_hot_update(device_id, item_name, item_name, final_price, int(units_left))
             except Exception as mqtt_err:
                 logger.warning(f"MQTT publish failed in PUT inventory: {mqtt_err}")
-            # ====================================================
+            # =======================================
 
         except Exception:
             conn.rollback()

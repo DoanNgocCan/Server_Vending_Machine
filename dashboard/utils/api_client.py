@@ -112,19 +112,22 @@ def create_product(item_name, price, cost_price=0, description=""):
     })
 
 
-def update_product(old_name, new_name=None, price=None, add_stock=0, device_id=None):
+def update_product(old_name, new_name=None, price=None, cost_price=None, description=None, add_stock=0, device_id=None):
     """POST /api/admin/update_product"""
     payload = {"old_name": old_name}
     if new_name:
         payload["new_name"] = new_name
     if price is not None:
         payload["price"] = price
+    if cost_price is not None:        # <-- BỔ SUNG
+        payload["cost_price"] = cost_price
+    if description is not None:       # <-- BỔ SUNG
+        payload["description"] = description
     if add_stock:
         payload["add_stock"] = add_stock
     if device_id:
         payload["device_id"] = device_id
     return _post("/api/admin/update_product", json=payload)
-
 
 def delete_product(item_name):
     """DELETE /api/admin/products/<item_name>"""

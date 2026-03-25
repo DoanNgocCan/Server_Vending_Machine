@@ -221,13 +221,17 @@ with tab_edit:
                             old_name=sel,
                             new_name=new_name if new_name != sel else None,
                             price=new_price,
+                            cost_price=new_cost,  # <-- THÊM DÒNG NÀY
+                            description=new_desc  # <-- THÊM DÒNG NÀY
                         )
                         
                         # Update số lượng VÀ VỊ TRÍ Ô cho máy cụ thể
                         if edit_device and edit_device != "Chưa có máy":
                             target_name = new_name if new_name != sel else sel
-                            # Truyền đủ 4 tham số: device_id, item_name, qty, slot_number
-                            update_device_inventory(edit_device, target_name, new_qty, new_slot)
+                            # Nhận lại biến trả về để check lỗi
+                            res_inv = update_device_inventory(edit_device, target_name, new_qty, new_slot)
+                            if not res_inv.get("success"):
+                                st.warning(f"⚠️ Cập nhật tồn kho bị lỗi: {res_inv.get('message')}")
                             
                     if res_info.get("success"):
                         st.success("✅ Đã lưu toàn bộ thay đổi thành công!")

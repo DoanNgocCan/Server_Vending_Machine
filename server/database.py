@@ -93,9 +93,13 @@ def create_tables():
                 device_id TEXT NOT NULL,
                 item_name TEXT NOT NULL,
                 units_left INTEGER DEFAULT 0,
+                slot_number INTEGER,
                 last_updated TEXT,
                 UNIQUE(device_id, item_name)
             )
+        """)
+        cursor.execute("""
+            ALTER TABLE device_inventory ADD COLUMN IF NOT EXISTS slot_number INTEGER
         """)
 
         # 4. Bảng transactions

@@ -161,6 +161,19 @@ class MQTTPublisher:
         }
         logger.info("Publishing product_updated event for '%s'", product_id)
         return self._publish(TOPIC_DATA_CHANGED, payload)
+    
+    def publish_hot_update(self, device_id, old_name, new_name, price, units_left):
+        """Bắn tín hiệu thay đổi Tên, Giá, Số lượng cho một máy cụ thể"""
+        payload = {
+            "old_name": old_name,
+            "new_name": new_name,
+            "price": price,
+            "units_left": units_left
+        }
+        # Sử dụng biến TOPIC_PRODUCT_UPDATE ("vending_machine/product/update") 
+        # và hàm _publish có sẵn để có retry và in log đầy đủ
+        logger.info(f"Publishing HOT UPDATE for '{old_name}' -> '{new_name}'")
+        return self._publish(TOPIC_PRODUCT_UPDATE, payload)
 
     def disconnect(self):
         """Cleanly stop the MQTT loop and disconnect."""

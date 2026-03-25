@@ -306,6 +306,8 @@ def admin_update_product():
         old_name = data.get('old_name')
         new_name = data.get('new_name')
         new_price = data.get('price')
+        cost_price = data.get('cost_price')   
+        description = data.get('description')
         add_stock = data.get('add_stock', 0)
         device_id = data.get('device_id')
 
@@ -327,8 +329,22 @@ def admin_update_product():
                 target_name = old_name
 
             # 2. Xử lý ĐỔI GIÁ (Master Data)
+            updates = []
+            params = []
             if new_price is not None:
-                cursor.execute("UPDATE inventory SET price = %s WHERE item_name = %s", (new_price, target_name))
+                updates.append("price = %s")
+                params.append(new_price)
+            if cost_price is not None:            # <-- BỔ SUNG
+                updates.append("cost_price = %s")
+                params.append(cost_price)
+            if description is not None:           # <-- BỔ SUNG
+                updates.append("description = %s")
+                params.append(description)
+
+            if updates:
+                query = f"UPDATE inventory SET {', '.join(updates)} WHERE item_name = %s"
+                params.append(target_name)
+                cursor.execute(query, tuple(params))
 
             # 3. Xử lý CẬP NHẬT KHO (Device Inventory)
             if device_id and add_stock != 0:
@@ -355,7 +371,28 @@ def admin_update_product():
         finally:
             conn.close()
 
-        get_publisher().publish_product_modified(target_name)
+        try:
+            conn2 = getDatabaseConnection()
+            cursor2 = conn2.cursor()
+            cursor2.execute("""
+                SELECT d.device_id, d.units_left, i.price, dp.custom_price
+                FROM device_inventory d
+                JOIN inventory i ON i.item_name = d.item_name
+                LEFT JOIN device_pricing dp ON dp.item_name = d.item_name AND dp.device_id = d.device_id
+                WHERE d.item_name = %s
+            """, (target_name,))
+            rows = cursor2.fetchall()
+            
+            for row in rows:
+                dev_id = row[0]
+                u_left = row[1]
+                f_price = row[3] if row[3] is not None else row[2]
+                # Bắn Hot Update cho từng máy chứa sản phẩm này
+                get_publisher().publish_hot_update(dev_id, old_name, target_name, f_price, u_left)
+        except Exception as e:
+            logger.warning(f"Lỗi gửi MQTT Hot Update khi đổi tên/giá: {e}")
+        finally:
+            if 'conn2' in locals(): conn2.close()
 
         return jsonify({'success': True, 'message': 'Cập nhật sản phẩm thành công'})
     except Exception as e:
