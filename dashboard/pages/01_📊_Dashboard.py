@@ -8,7 +8,7 @@ sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '..')
 import streamlit as st
 import pandas as pd
 import plotly.express as px
-from datetime import datetime
+from datetime import datetime, date, timedelta
 
 from utils.auth import check_authentication
 from utils.api_client import get_all_products, get_devices, get_transactions, get_inventory_stats, get_device_inventory
@@ -22,15 +22,23 @@ if not check_authentication():
 st.title("📊 Dashboard Tổng Quan")
 st.caption(f"Cập nhật lúc: {datetime.now().strftime('%H:%M %d/%m/%Y')}")
 
-if st.button("🔄 Làm mới dữ liệu"):
-    st.cache_data.clear()
-    st.rerun()
+# Tích hợp bộ lọc ngày từ Analytics
+col_date1, col_date2, col_reload = st.columns([2, 2, 1])
+with col_date1:
+    start_date = st.date_input("Từ ngày:", value=date.today() - timedelta(days=30))
+with col_date2:
+    end_date = st.date_input("Đến ngày:", value=date.today())
+with col_reload:
+    st.write("")
+    if st.button("🔄 Làm mới dữ liệu"):
+        st.cache_data.clear()
+        st.rerun()
 
 # ── Fetch data ─────────────────────────────────────────────────────────────
 with st.spinner("Đang tải dữ liệu..."):
     products_resp = get_all_products()
     devices_resp = get_devices()
-    trans_resp = get_transactions(limit=500)
+    trans_resp = get_transactions(limit=5000) # Tăng limit để phân tích
     stats_resp = get_inventory_stats()
 
 products = products_resp.get("products", []) if products_resp.get("success") else []
@@ -40,6 +48,12 @@ stats = stats_resp.get("stats", {}) if stats_resp.get("success") else {}
 
 df_trans = pd.DataFrame(transactions) if transactions else pd.DataFrame()
 
+# Lọc giao dịch theo ngày
+if not df_trans.empty and "created_at" in df_trans.columns:
+    df_trans["created_at"] = pd.to_datetime(df_trans["created_at"])
+    df_trans["date"] = df_trans["created_at"].dt.date
+    df_trans = df_trans[(df_trans["date"] >= start_date) & (df_trans["date"] <= end_date)]
+
 # ── KPI Cards ──────────────────────────────────────────────────────────────
 st.markdown("### 📌 Chỉ Số Tổng Quan")
 k1, k2, k3, k4 = st.columns(4)
@@ -48,7 +62,7 @@ total_revenue = df_trans["total_amount"].sum() if not df_trans.empty and "total_
 k1.metric("💰 Tổng Doanh Thu", format_currency(total_revenue))
 k2.metric("📦 Sản Phẩm", len(products))
 k3.metric("🖥️ Máy Kết Nối", len(devices))
-k4.metric("🧾 Tổng Giao Dịch", format_number(len(transactions)))
+k4.metric("🧾 Tổng Giao Dịch", format_number(len(df_trans)))
 
 st.markdown("---")
 
@@ -57,8 +71,7 @@ left, right = st.columns(2)
 
 with left:
     st.subheader("📈 Doanh Thu Theo Ngày")
-    if not df_trans.empty and "created_at" in df_trans.columns:
-        df_trans["date"] = pd.to_datetime(df_trans["created_at"]).dt.date
+    if not df_trans.empty:
         daily = df_trans.groupby("date")["total_amount"].sum().reset_index()
         fig = px.line(daily, x="date", y="total_amount",
                       labels={"date": "Ngày", "total_amount": "Doanh Thu (₫)"},
@@ -66,7 +79,7 @@ with left:
         fig.update_layout(margin=dict(l=0, r=0, t=30, b=0))
         st.plotly_chart(fig, use_container_width=True)
     else:
-        st.info("Chưa có dữ liệu giao dịch.")
+        st.info("Chưa có dữ liệu giao dịch trong khoảng thời gian này.")
 
 with right:
     st.subheader("🏆 Top Sản Phẩm Bán Chạy")
@@ -103,14 +116,17 @@ if devices:
         st.dataframe(pd.DataFrame(low_stock_rows), use_container_width=True)
     else:
         st.success("✅ Tất cả sản phẩm đều có tồn kho đủ (≥ 10).")
-else:
-    st.info("Chưa có máy nào được kết nối.")
 
-# ── Recent Transactions ─────────────────────────────────────────────────────
+# ── Recent Transactions & Export ────────────────────────────────────────────
 st.subheader("📋 Giao Dịch Gần Nhất")
 if not df_trans.empty:
     cols_show = [c for c in ["transaction_id", "device_id", "total_amount", "payment_status", "created_at"] if c in df_trans.columns]
-    display = df_trans[cols_show].head(10).copy()
+    display = df_trans[cols_show].sort_values("created_at", ascending=False).head(50).copy()
+    
+    # Nút Export CSV
+    csv_data = df_trans.to_csv(index=False).encode("utf-8")
+    st.download_button("⬇️ Tải File Báo Cáo CSV", data=csv_data, file_name=f"transactions_{start_date}_{end_date}.csv", mime="text/csv")
+    
     if "total_amount" in display.columns:
         display["total_amount"] = display["total_amount"].apply(format_currency)
     if "created_at" in display.columns:

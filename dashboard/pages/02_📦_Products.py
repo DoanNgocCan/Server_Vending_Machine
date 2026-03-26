@@ -65,12 +65,17 @@ with tab_list:
         page_count = max(1, (total - 1) // PAGINATION_SIZE + 1)
         page = st.number_input("Trang", min_value=1, max_value=page_count, value=1, step=1)
         start = (page - 1) * PAGINATION_SIZE
-        df_page = df.iloc[start : start + PAGINATION_SIZE]
+        df_page = df.iloc[start : start + PAGINATION_SIZE].copy()
 
         st.caption(f"Hiển thị {len(df_page)}/{total} sản phẩm")
 
+        # Thêm cột lợi nhuận từ file Pricing
+        if "price" in df_page.columns and "cost_price" in df_page.columns:
+            df_page["Lợi Nhuận (₫)"] = df_page["price"] - df_page["cost_price"]
+            df_page["Biên Lợi Nhuận (%)"] = (df_page["Lợi Nhuận (₫)"] / df_page["price"].replace(0, float("nan")) * 100).round(1)
+
         # Hiển thị bảng
-        show_cols = [c for c in ["item_name", "price", "cost_price", "description", "units_sold"] if c in df_page.columns]
+        show_cols = [c for c in ["item_name", "price", "cost_price", "Lợi Nhuận (₫)", "Biên Lợi Nhuận (%)", "units_sold"] if c in df_page.columns]
         st.dataframe(
             df_page[show_cols],
             use_container_width=True,
@@ -78,8 +83,9 @@ with tab_list:
                 "item_name": st.column_config.TextColumn("Tên sản phẩm"),
                 "price": st.column_config.NumberColumn("Giá bán (₫)", format="%,.0f"),
                 "cost_price": st.column_config.NumberColumn("Giá vốn (₫)", format="%,.0f"),
+                "Lợi Nhuận (₫)": st.column_config.NumberColumn("Lợi nhuận (₫)", format="%,.0f"),
+                "Biên Lợi Nhuận (%)": st.column_config.NumberColumn("Biên LN (%)", format="%.1f%%"),
                 "units_sold": st.column_config.NumberColumn("Đã bán"),
-                "description": st.column_config.TextColumn("Mô tả"),
             },
         )
 
@@ -114,40 +120,59 @@ with tab_create:
             elif price <= 0:
                 st.error("❌ Giá bán phải lớn hơn 0!")
             else:
-                with st.spinner("Đang tạo sản phẩm..."):
-                    result = create_product(name.strip(), price, cost_price, description)
-
-                if result.get("success"):
-                    success_msgs = [f"✅ Tạo sản phẩm **{name.strip()}** thành công!"]
-                    
-                    # Cập nhật số lượng
-                    if initial_stock > 0 and device_ids:
-                        devs_to_update = device_ids if target_device == "Tất cả các máy" else [target_device]
-                        for dev in devs_to_update:
-                            # Chú ý: Cần truyền thêm tham số slot_number vào hàm này
-                            stock_res = update_device_inventory(dev, name.strip(), initial_stock, slot_number)
-                            if stock_res.get("success"):
-                                success_msgs.append(f"📦 Đã set {initial_stock} sản phẩm cho máy {dev}.")
-                            else:
-                                st.warning(f"⚠️ Lỗi set tồn kho máy {dev}: {stock_res.get('message')}")
-                    
-                    # Upload ảnh
-                    if image_file:
-                        valid, err = validate_image_file(image_file)
-                        if valid:
-                            img_result = upload_image(name.strip(), image_file.getvalue(), image_file.name)
-                            if img_result.get("success"):
-                                success_msgs.append("📸 Upload ảnh thành công!")
-                            else:
-                                st.warning(f"⚠️ Upload ảnh lỗi: {img_result.get('message')}")
-                        else:
-                            st.warning(f"⚠️ Ảnh không hợp lệ: {err}")
-                    
-                    for msg in success_msgs:
-                        st.success(msg)
-                    st.cache_data.clear()
+                # KIỂM TRA TRÙNG Ô (SLOT CONFLICT) TRƯỚC KHI TẠO
+                slot_conflict = False
+                conflict_msg = ""
+                if initial_stock > 0 and device_ids:
+                    devs_to_check = device_ids if target_device == "Tất cả các máy" else [target_device]
+                    for dev in devs_to_check:
+                        inv_resp = get_device_inventory(dev)
+                        if inv_resp.get("success"):
+                            for item in inv_resp.get("inventory", []):
+                                if item.get("slot_number") == slot_number:
+                                    slot_conflict = True
+                                    conflict_msg = f"Máy **{dev}** đang chứa sản phẩm **'{item.get('item_name')}'** tại Ô số **{slot_number}**."
+                                    break
+                        if slot_conflict:
+                            break
+                
+                if slot_conflict:
+                    st.error(f"❌ **Lỗi xung đột vị trí:** {conflict_msg} Vui lòng chọn ô khác để tạo!")
                 else:
-                    st.error(f"❌ {result.get('message', 'Tạo thất bại')}")
+                    # NẾU KHÔNG TRÙNG Ô THÌ TIẾN HÀNH TẠO SẢN PHẨM
+                    with st.spinner("Đang tạo sản phẩm..."):
+                        result = create_product(name.strip(), price, cost_price, description)
+
+                    if result.get("success"):
+                        success_msgs = [f"✅ Tạo sản phẩm **{name.strip()}** thành công!"]
+                        
+                        # Cập nhật số lượng
+                        if initial_stock > 0 and device_ids:
+                            devs_to_update = device_ids if target_device == "Tất cả các máy" else [target_device]
+                            for dev in devs_to_update:
+                                stock_res = update_device_inventory(dev, name.strip(), initial_stock, slot_number)
+                                if stock_res.get("success"):
+                                    success_msgs.append(f"📦 Đã set {initial_stock} sản phẩm cho máy {dev} ở Ô {slot_number}.")
+                                else:
+                                    st.warning(f"⚠️ Lỗi set tồn kho máy {dev}: {stock_res.get('message')}")
+                        
+                        # Upload ảnh
+                        if image_file:
+                            valid, err = validate_image_file(image_file)
+                            if valid:
+                                img_result = upload_image(name.strip(), image_file.getvalue(), image_file.name)
+                                if img_result.get("success"):
+                                    success_msgs.append("📸 Upload ảnh thành công!")
+                                else:
+                                    st.warning(f"⚠️ Upload ảnh lỗi: {img_result.get('message')}")
+                            else:
+                                st.warning(f"⚠️ Ảnh không hợp lệ: {err}")
+                        
+                        for msg in success_msgs:
+                            st.success(msg)
+                        st.cache_data.clear()
+                    else:
+                        st.error(f"❌ {result.get('message', 'Tạo thất bại')}")
 
 # ════════════════════════════════════════════════════════
 # TAB 3: CHỈNH SỬA, SET SỐ LƯỢNG & XÓA SẢN PHẨM
@@ -214,31 +239,47 @@ with tab_edit:
                     new_slot = st.selectbox(f"Số ô (hiện tại: {current_slot})", options=list(range(1, 11)), index=current_slot-1)
 
                 save = st.form_submit_button("💾 Lưu Toàn Bộ Thay Đổi", type="primary")
+                
                 if save:
-                    with st.spinner("Đang cập nhật..."):
-                        # Update thông tin chung (master data)
-                        res_info = update_product(
-                            old_name=sel,
-                            new_name=new_name if new_name != sel else None,
-                            price=new_price,
-                            cost_price=new_cost,  # <-- THÊM DÒNG NÀY
-                            description=new_desc  # <-- THÊM DÒNG NÀY
-                        )
-                        
-                        # Update số lượng VÀ VỊ TRÍ Ô cho máy cụ thể
-                        if edit_device and edit_device != "Chưa có máy":
-                            target_name = new_name if new_name != sel else sel
-                            # Nhận lại biến trả về để check lỗi
-                            res_inv = update_device_inventory(edit_device, target_name, new_qty, new_slot)
-                            if not res_inv.get("success"):
-                                st.warning(f"⚠️ Cập nhật tồn kho bị lỗi: {res_inv.get('message')}")
-                            
-                    if res_info.get("success"):
-                        st.success("✅ Đã lưu toàn bộ thay đổi thành công!")
-                        st.cache_data.clear()
-                        st.rerun()
+                    # KIỂM TRA TRÙNG Ô (SLOT CONFLICT) TRƯỚC KHI LƯU
+                    slot_conflict = False
+                    conflict_msg = ""
+                    if edit_device and edit_device != "Chưa có máy":
+                        inv_resp = get_device_inventory(edit_device)
+                        if inv_resp.get("success"):
+                            for item in inv_resp.get("inventory", []):
+                                # Kiểm tra xem ô mới đã có sản phẩm khác đang chiếm dụng chưa (bỏ qua chính nó)
+                                if item.get("slot_number") == new_slot and item.get("item_name") != sel:
+                                    slot_conflict = True
+                                    conflict_msg = f"Sản phẩm **'{item.get('item_name')}'** đang nằm ở Ô số **{new_slot}** trên máy này."
+                                    break
+                    
+                    if slot_conflict:
+                        st.error(f"❌ **Lỗi xung đột vị trí:** {conflict_msg} Vui lòng chọn ô khác!")
                     else:
-                        st.error(f"❌ {res_info.get('message')}")
+                        with st.spinner("Đang cập nhật..."):
+                            # Update thông tin chung (master data)
+                            res_info = update_product(
+                                old_name=sel,
+                                new_name=new_name if new_name != sel else None,
+                                price=new_price,
+                                cost_price=new_cost,
+                                description=new_desc
+                            )
+                            
+                            # Update số lượng VÀ VỊ TRÍ Ô cho máy cụ thể
+                            if edit_device and edit_device != "Chưa có máy":
+                                target_name = new_name if new_name != sel else sel
+                                res_inv = update_device_inventory(edit_device, target_name, new_qty, new_slot)
+                                if not res_inv.get("success"):
+                                    st.warning(f"⚠️ Cập nhật tồn kho bị lỗi: {res_inv.get('message')}")
+                                
+                        if res_info.get("success"):
+                            st.success("✅ Đã lưu toàn bộ thay đổi thành công!")
+                            st.cache_data.clear()
+                            st.rerun()
+                        else:
+                            st.error(f"❌ {res_info.get('message')}")
 
             st.markdown("---")
             # --- KHU VỰC XÓA SẢN PHẨM ---
