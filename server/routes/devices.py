@@ -96,14 +96,16 @@ def update_device_inventory(device_id, item_name):
             cursor.execute("SELECT item_name FROM device_inventory WHERE device_id = %s AND slot_number = %s", (device_id, slot_number))
             row = cursor.fetchone()
             
-            # ĐÃ SỬA LỖI TẠI ĐÂY: Dùng row[0] thay vì row['item_name']
             if row and row[0] != item_name:
                 # Gỡ sản phẩm cũ khỏi ô này
                 cursor.execute("DELETE FROM device_inventory WHERE device_id = %s AND slot_number = %s", (device_id, slot_number))
             
-            # 2. Kiểm tra xem sản phẩm này đã có trong máy chưa
-            cursor.execute("SELECT 1 FROM device_inventory WHERE device_id = %s AND item_name = %s", (device_id, item_name))
-            if cursor.fetchone():
+            # 2. LẤY SỐ Ô CŨ ĐỂ SO SÁNH TRƯỚC KHI CẬP NHẬT
+            cursor.execute("SELECT slot_number FROM device_inventory WHERE device_id = %s AND item_name = %s", (device_id, item_name))
+            row_exist = cursor.fetchone()
+            old_slot = row_exist[0] if row_exist else None
+            
+            if row_exist:
                 # Cập nhật số lượng và số ô mới
                 cursor.execute("""
                     UPDATE device_inventory 
@@ -120,7 +122,7 @@ def update_device_inventory(device_id, item_name):
             conn.commit()
             logSystemEvent('inventory_update', f'{device_id}: {item_name} set to {units_left}')
 
-            # ======== ĐỒNG BỘ CLIENT (MQTT) ========
+            # ======== ĐỒNG BỘ CLIENT (MQTT) ĐÃ CẬP NHẬT LOGIC ========
             try:
                 cursor.execute("""
                     SELECT i.price, dp.custom_price 
@@ -129,11 +131,16 @@ def update_device_inventory(device_id, item_name):
                     WHERE i.item_name = %s
                 """, (device_id, item_name))
                 row_price = cursor.fetchone()
-                # Lấy giá riêng của máy (nếu có), không thì lấy giá gốc
                 final_price = row_price[1] if row_price and row_price[1] is not None else (row_price[0] if row_price else 0)
                 
                 from mqtt_publisher import get_publisher
-                get_publisher().publish_hot_update(device_id, item_name, item_name, final_price, int(units_left))
+                
+                # KIỂM TRA: Đổi ô hoặc thêm mới -> Vẽ lại toàn bộ 10 ô
+                if old_slot != slot_number:
+                    get_publisher().publish_product_modified(item_name)
+                # Giữ nguyên ô, chỉ đổi số lượng -> Bắn Hot Update cho nhẹ
+                else:
+                    get_publisher().publish_hot_update(device_id, item_name, item_name, final_price, int(units_left))
             except Exception as mqtt_err:
                 logger.warning(f"MQTT publish failed in PUT inventory: {mqtt_err}")
             # =======================================
@@ -179,7 +186,7 @@ def remove_device_inventory(device_id, item_name):
         # (Tùy chọn) Bắn MQTT update để máy trạm cập nhật lại UI ngay lập tức
         try:
             from mqtt_publisher import get_publisher
-            get_publisher().publish_product_update(item_name, 0, 0)
+            get_publisher().publish_product_modified(item_name)
         except Exception as mqtt_err:
             logger.warning(f"MQTT publish failed: {mqtt_err}")
 

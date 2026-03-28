@@ -282,27 +282,50 @@ with tab_edit:
                             st.error(f"❌ {res_info.get('message')}")
 
             st.markdown("---")
-            # --- KHU VỰC XÓA SẢN PHẨM ---
-            st.subheader("🗑️ Xóa Sản Phẩm Này")
-            st.warning("⚠️ **Nguy hiểm:** Việc xóa sản phẩm sẽ xóa sản phẩm này khỏi Master Data và tất cả các máy. Hành động này không thể hoàn tác.")
+            # --- KHU VỰC GỠ/XÓA SẢN PHẨM ---
+            st.subheader("🗑️ Gỡ / Xóa Sản Phẩm Này")
             
-            if st.button("🗑️ Xác nhận xóa sản phẩm", type="primary", use_container_width=True):
-                st.session_state["confirm_delete_btn"] = sel
+            delete_mode = st.radio(
+                "Tùy chọn phạm vi xóa:",
+                ["Gỡ khỏi MỘT MÁY CỤ THỂ", "Xóa VĨNH VIỄN khỏi toàn hệ thống"]
+            )
+            
+            # TRƯỜNG HỢP 1: XÓA Ở 1 MÁY
+            if delete_mode == "Gỡ khỏi MỘT MÁY CỤ THỂ":
+                st.info("💡 Sản phẩm sẽ biến mất khỏi ô trên máy được chọn, nhưng vẫn còn trong Master Data để gán lại sau.")
+                del_device = st.selectbox("Chọn máy để gỡ:", device_ids if device_ids else ["Chưa có máy"], key="del_dev_select")
                 
-            if st.session_state.get("confirm_delete_btn") == sel:
-                st.error(f"Bạn có chắc chắn muốn xóa vĩnh viễn **{sel}**?")
-                c1, c2 = st.columns(2)
-                with c1:
-                    if st.button("✅ Vâng, Xóa ngay!"):
-                        result = delete_product(sel)
+                if st.button(f"🗑️ Xác nhận gỡ khỏi {del_device}", type="primary"):
+                    with st.spinner(f"Đang gỡ khỏi {del_device}..."):
+                        result = remove_device_inventory(del_device, sel)
                         if result.get("success"):
-                            st.success(f"✅ Đã xóa thành công: {sel}")
-                            st.session_state.pop("confirm_delete_btn", None)
+                            st.success(f"✅ Đã gỡ thành công {sel} khỏi {del_device}")
                             st.cache_data.clear()
                             st.rerun()
                         else:
                             st.error(f"❌ Lỗi: {result.get('message')}")
-                with c2:
-                    if st.button("❌ Hủy bỏ"):
-                        st.session_state.pop("confirm_delete_btn", None)
-                        st.rerun()
+
+            # TRƯỜNG HỢP 2: XÓA TOÀN HỆ THỐNG
+            elif delete_mode == "Xóa VĨNH VIỄN khỏi toàn hệ thống":
+                st.warning("⚠️ **Nguy hiểm:** Xóa khỏi Master Data và tất cả các máy. Hành động này không thể hoàn tác.")
+                
+                if st.button("🗑️ Xác nhận xóa vĩnh viễn", type="primary"):
+                    st.session_state["confirm_delete_btn"] = sel
+                    
+                if st.session_state.get("confirm_delete_btn") == sel:
+                    st.error(f"Bạn có chắc chắn muốn xóa vĩnh viễn **{sel}**?")
+                    c1, c2 = st.columns(2)
+                    with c1:
+                        if st.button("✅ Vâng, Xóa ngay!"):
+                            result = delete_product(sel)
+                            if result.get("success"):
+                                st.success(f"✅ Đã xóa thành công: {sel}")
+                                st.session_state.pop("confirm_delete_btn", None)
+                                st.cache_data.clear()
+                                st.rerun()
+                            else:
+                                st.error(f"❌ Lỗi: {result.get('message')}")
+                    with c2:
+                        if st.button("❌ Hủy bỏ"):
+                            st.session_state.pop("confirm_delete_btn", None)
+                            st.rerun()

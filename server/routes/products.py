@@ -432,7 +432,12 @@ def admin_delete_product(item_name):
             filepath = os.path.join(IMAGES_DIR, filename)
             if os.path.exists(filepath):
                 os.remove(filepath)
-
+        try:
+            from mqtt_publisher import get_publisher
+            get_publisher().publish_product_modified(item_name)
+        except Exception as mqtt_err:
+            logger.warning(f"MQTT publish failed in delete product: {mqtt_err}")
+            
         return jsonify({'success': True, 'message': f'Đã xóa sản phẩm: {item_name}'})
     except Exception as e:
         logger.error(f"Admin Delete Product Error: {e}")
