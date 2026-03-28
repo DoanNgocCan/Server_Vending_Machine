@@ -62,6 +62,12 @@ def create_tables():
                 updated_at TIMESTAMP DEFAULT NOW()
             )
         """)
+        cursor.execute("""
+            CREATE TABLE IF NOT EXISTS devices (
+                device_id VARCHAR(50) PRIMARY KEY,
+                last_active TEXT
+            )
+        """)
 
         # Migration: add image + timestamp columns to existing inventory tables
         _ALLOWED_MIGRATIONS = {
@@ -87,9 +93,13 @@ def create_tables():
                 device_id TEXT NOT NULL,
                 item_name TEXT NOT NULL,
                 units_left INTEGER DEFAULT 0,
+                slot_number INTEGER,
                 last_updated TEXT,
                 UNIQUE(device_id, item_name)
             )
+        """)
+        cursor.execute("""
+            ALTER TABLE device_inventory ADD COLUMN IF NOT EXISTS slot_number INTEGER
         """)
 
         # 4. Bảng transactions

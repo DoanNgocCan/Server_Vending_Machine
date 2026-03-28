@@ -3,6 +3,7 @@ from datetime import datetime, timezone
 import logging
 import os
 import uuid
+import time
 
 from database import getDatabaseConnection, dict_fetchall, dict_fetchone
 from utils import logSystemEvent
@@ -161,15 +162,20 @@ def admin_add_stock():
         conn = getDatabaseConnection()
         try:
             cursor = conn.cursor()
-            cursor.execute("""
-                INSERT INTO device_inventory (device_id, item_name, units_left, last_updated)
-                VALUES (%s, %s, %s, %s)
-                ON CONFLICT(device_id, item_name) DO UPDATE SET
-                    units_left = device_inventory.units_left + %s,
-                    last_updated = %s
-            """, (device_id, item_name, quantity, now_iso, quantity, now_iso))
+            cursor.execute("SELECT units_left FROM device_inventory WHERE device_id = %s AND item_name = %s", (device_id, item_name))
+            if cursor.fetchone():
+                cursor.execute("""
+                    UPDATE device_inventory 
+                    SET units_left = units_left + %s, last_updated = %s
+                    WHERE device_id = %s AND item_name = %s
+                """, (quantity, now_iso, device_id, item_name))
+            else:
+                cursor.execute("""
+                    INSERT INTO device_inventory (device_id, item_name, units_left, last_updated)
+                    VALUES (%s, %s, %s, %s)
+                """, (device_id, item_name, quantity, now_iso))
+
             conn.commit()
-            
             logSystemEvent('stock_added', f'Added {quantity} units of {item_name} to {device_id}')
         finally:
             conn.close()
@@ -211,11 +217,13 @@ def setDevicePrice():
         conn = getDatabaseConnection()
         try:
             cursor = conn.cursor()
-            cursor.execute("""
-                INSERT INTO device_pricing (device_id, item_name, custom_price)
-                VALUES (%s, %s, %s)
-                ON CONFLICT(device_id, item_name) DO UPDATE SET custom_price = EXCLUDED.custom_price
-            """, (device_id, item_name, price))
+            
+            cursor.execute("SELECT 1 FROM device_pricing WHERE device_id = %s AND item_name = %s", (device_id, item_name))
+            if cursor.fetchone():
+                cursor.execute("UPDATE device_pricing SET custom_price = %s WHERE device_id = %s AND item_name = %s", (price, device_id, item_name))
+            else:
+                cursor.execute("INSERT INTO device_pricing (device_id, item_name, custom_price) VALUES (%s, %s, %s)", (device_id, item_name, price))
+                
             conn.commit()
         except Exception:
             conn.rollback()
@@ -241,10 +249,18 @@ def getProducts():
         try:
             cursor = conn.cursor()
             if device_id:
+                now_iso = datetime.now(timezone.utc).isoformat()
+                cursor.execute("""
+                    INSERT INTO devices (device_id, last_active) 
+                    VALUES (%s, %s)
+                    ON CONFLICT(device_id) DO UPDATE SET last_active = EXCLUDED.last_active
+                """, (device_id, now_iso))
+                conn.commit()
                 query = """
                     SELECT i.item_name, i.price, i.description,
                            i.image_filename, i.image_url, i.created_at,
                            COALESCE(d.units_left, 0) as units_left,
+                           d.slot_number,
                            dp.custom_price
                     FROM inventory i
                     LEFT JOIN device_inventory d ON i.item_name = d.item_name AND d.device_id = %s
@@ -290,6 +306,8 @@ def admin_update_product():
         old_name = data.get('old_name')
         new_name = data.get('new_name')
         new_price = data.get('price')
+        cost_price = data.get('cost_price')   
+        description = data.get('description')
         add_stock = data.get('add_stock', 0)
         device_id = data.get('device_id')
 
@@ -311,8 +329,22 @@ def admin_update_product():
                 target_name = old_name
 
             # 2. Xử lý ĐỔI GIÁ (Master Data)
+            updates = []
+            params = []
             if new_price is not None:
-                cursor.execute("UPDATE inventory SET price = %s WHERE item_name = %s", (new_price, target_name))
+                updates.append("price = %s")
+                params.append(new_price)
+            if cost_price is not None:            # <-- BỔ SUNG
+                updates.append("cost_price = %s")
+                params.append(cost_price)
+            if description is not None:           # <-- BỔ SUNG
+                updates.append("description = %s")
+                params.append(description)
+
+            if updates:
+                query = f"UPDATE inventory SET {', '.join(updates)} WHERE item_name = %s"
+                params.append(target_name)
+                cursor.execute(query, tuple(params))
 
             # 3. Xử lý CẬP NHẬT KHO (Device Inventory)
             if device_id and add_stock != 0:
@@ -339,7 +371,28 @@ def admin_update_product():
         finally:
             conn.close()
 
-        get_publisher().publish_product_modified(target_name)
+        try:
+            conn2 = getDatabaseConnection()
+            cursor2 = conn2.cursor()
+            cursor2.execute("""
+                SELECT d.device_id, d.units_left, i.price, dp.custom_price
+                FROM device_inventory d
+                JOIN inventory i ON i.item_name = d.item_name
+                LEFT JOIN device_pricing dp ON dp.item_name = d.item_name AND dp.device_id = d.device_id
+                WHERE d.item_name = %s
+            """, (target_name,))
+            rows = cursor2.fetchall()
+            
+            for row in rows:
+                dev_id = row[0]
+                u_left = row[1]
+                f_price = row[3] if row[3] is not None else row[2]
+                # Bắn Hot Update cho từng máy chứa sản phẩm này
+                get_publisher().publish_hot_update(dev_id, old_name, target_name, f_price, u_left)
+        except Exception as e:
+            logger.warning(f"Lỗi gửi MQTT Hot Update khi đổi tên/giá: {e}")
+        finally:
+            if 'conn2' in locals(): conn2.close()
 
         return jsonify({'success': True, 'message': 'Cập nhật sản phẩm thành công'})
     except Exception as e:

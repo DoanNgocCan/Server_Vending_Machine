@@ -4,6 +4,7 @@ Tất cả các trang Streamlit sẽ dùng module này để gọi API.
 """
 import sys
 import os
+
 sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
 
 import logging
@@ -111,19 +112,22 @@ def create_product(item_name, price, cost_price=0, description=""):
     })
 
 
-def update_product(old_name, new_name=None, price=None, add_stock=0, device_id=None):
+def update_product(old_name, new_name=None, price=None, cost_price=None, description=None, add_stock=0, device_id=None):
     """POST /api/admin/update_product"""
     payload = {"old_name": old_name}
     if new_name:
         payload["new_name"] = new_name
     if price is not None:
         payload["price"] = price
+    if cost_price is not None:        # <-- BỔ SUNG
+        payload["cost_price"] = cost_price
+    if description is not None:       # <-- BỔ SUNG
+        payload["description"] = description
     if add_stock:
         payload["add_stock"] = add_stock
     if device_id:
         payload["device_id"] = device_id
     return _post("/api/admin/update_product", json=payload)
-
 
 def delete_product(item_name):
     """DELETE /api/admin/products/<item_name>"""
@@ -153,9 +157,15 @@ def get_device_inventory(device_id):
     return _get(f"/api/devices/{device_id}/inventory")
 
 
-def update_device_inventory(device_id, item_name, units_left):
+# Ví dụ sửa trong utils/api_client.py
+def update_device_inventory(device_id, item_name, units_left, slot_number):
     """PUT /api/devices/<device_id>/inventory/<item_name>"""
-    return _put(f"/api/devices/{device_id}/inventory/{item_name}", json={"units_left": units_left})
+    payload = {
+        "units_left": units_left,
+        "slot_number": slot_number  # <-- Đã thêm số ô
+    }
+    # Dùng _put thay vì requests.put để tận dụng Retry và SERVER_URL mặc định
+    return _put(f"/api/devices/{device_id}/inventory/{item_name}", json=payload)
 
 
 def set_custom_price(device_id, item_name, price):
@@ -165,7 +175,9 @@ def set_custom_price(device_id, item_name, price):
         "item_name": item_name,
         "price": price,
     })
-
+def remove_product_from_device(device_id, item_name):
+    """DELETE /api/devices/<device_id>/inventory/<item_name> - Gỡ sản phẩm khỏi 1 máy cụ thể"""
+    return _delete(f"/api/devices/{device_id}/inventory/{item_name}")
 
 # ──────────────────────────────────────────────
 # TRANSACTIONS
