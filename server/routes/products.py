@@ -100,15 +100,15 @@ def admin_create_product():
         # Support both JSON and multipart form
         if request.content_type and 'multipart/form-data' in request.content_type:
             item_name   = request.form.get('item_name', '')
-            price       = float(request.form.get('price', 0))
-            cost_price  = float(request.form.get('cost_price', 0))
+            price       = int(float(request.form.get('price', 0))) 
+            cost_price  = int(float(request.form.get('cost_price', 0)))
             description = request.form.get('description', '')
             image_file  = request.files.get('image')
         else:
             data        = request.get_json() or {}
             item_name   = data.get('item_name', '')
-            price       = data.get('price', 0)
-            cost_price  = data.get('cost_price', 0)
+            price       = int(float(data.get('price', 0)))                
+            cost_price  = int(float(data.get('cost_price', 0)))         
             description = data.get('description', '')
             image_file  = None
 
@@ -305,8 +305,8 @@ def admin_update_product():
         data = request.get_json()
         old_name = data.get('old_name')
         new_name = data.get('new_name')
-        new_price = data.get('price')
-        cost_price = data.get('cost_price')   
+        new_price = int(float(data.get('price'))) if data.get('price') is not None else None
+        cost_price = int(float(data.get('cost_price'))) if data.get('cost_price') is not None else None  
         description = data.get('description')
         add_stock = data.get('add_stock', 0)
         device_id = data.get('device_id')
