@@ -132,7 +132,9 @@ def update_product(old_name, new_name=None, price=None, cost_price=None, descrip
 def delete_product(item_name):
     """DELETE /api/admin/products/<item_name>"""
     return _delete(f"/api/admin/products/{item_name}")
-
+def remove_device_inventory(device_id, item_name):
+    """Gọi API gỡ một sản phẩm ra khỏi một máy cụ thể"""
+    return _delete(f"/api/devices/{device_id}/inventory/{item_name}")
 
 # ──────────────────────────────────────────────
 # DEVICES

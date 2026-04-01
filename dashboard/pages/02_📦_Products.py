@@ -7,12 +7,14 @@ sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '..')
 
 import streamlit as st
 import pandas as pd
+import time
 
 from utils.auth import check_authentication
 from utils.api_client import (
     get_all_products, create_product, update_product,
     delete_product, get_image_url, upload_image,
-    get_devices, update_device_inventory, get_device_inventory
+    get_devices, update_device_inventory, get_device_inventory,
+    remove_device_inventory
 )
 from utils.helpers import format_currency, format_datetime, validate_image_file
 from config import PAGINATION_SIZE
@@ -39,6 +41,7 @@ with tab_list:
     with col_reload:
         if st.button("🔄 Làm mới dữ liệu"):
             st.cache_data.clear()
+            time.sleep(1.5)
             st.rerun()
     with col_search:
         search_q = st.text_input("🔍 Tìm kiếm sản phẩm", placeholder="Nhập tên sản phẩm...")
@@ -90,10 +93,10 @@ with tab_list:
         )
 
 # ════════════════════════════════════════════════════════
-# TAB 2: THÊM SẢN PHẨM MỚI (Kèm số lượng)
+# TAB 2: THÊM MỚI & GÁN SẢN PHẨM
 # ════════════════════════════════════════════════════════
 with tab_create:
-    st.subheader("➕ Thêm Sản Phẩm Mới")
+    st.subheader("➕ Tạo Sản Phẩm Mới (Master Data)")
     
     with st.form("create_form", clear_on_submit=True):
         col1, col2 = st.columns(2)
@@ -139,14 +142,12 @@ with tab_create:
                 if slot_conflict:
                     st.error(f"❌ **Lỗi xung đột vị trí:** {conflict_msg} Vui lòng chọn ô khác để tạo!")
                 else:
-                    # NẾU KHÔNG TRÙNG Ô THÌ TIẾN HÀNH TẠO SẢN PHẨM
                     with st.spinner("Đang tạo sản phẩm..."):
                         result = create_product(name.strip(), price, cost_price, description)
 
                     if result.get("success"):
                         success_msgs = [f"✅ Tạo sản phẩm **{name.strip()}** thành công!"]
                         
-                        # Cập nhật số lượng
                         if initial_stock > 0 and device_ids:
                             devs_to_update = device_ids if target_device == "Tất cả các máy" else [target_device]
                             for dev in devs_to_update:
@@ -156,7 +157,6 @@ with tab_create:
                                 else:
                                     st.warning(f"⚠️ Lỗi set tồn kho máy {dev}: {stock_res.get('message')}")
                         
-                        # Upload ảnh
                         if image_file:
                             valid, err = validate_image_file(image_file)
                             if valid:
@@ -173,6 +173,67 @@ with tab_create:
                         st.cache_data.clear()
                     else:
                         st.error(f"❌ {result.get('message', 'Tạo thất bại')}")
+
+    st.markdown("---")
+    
+    # ----------------------------------------------------------------------
+    # TÍNH NĂNG MỚI: GÁN SẢN PHẨM ĐÃ CÓ VÀO MÁY
+    # ----------------------------------------------------------------------
+    st.subheader("🔗 Gán Sản Phẩm Đã Có Vào Máy")
+    st.info("Sử dụng phần này để đưa một sản phẩm đã có trong Master Data (nhưng bị gỡ ra hoặc chưa từng gán) vào một ô trống cụ thể trên máy.")
+    
+    # Tải lại danh sách sản phẩm để đảm bảo có data mới nhất
+    master_resp = get_all_products()
+    master_products = master_resp.get("products", []) if master_resp.get("success") else []
+    master_product_names = [p["item_name"] for p in master_products]
+    
+    with st.form("assign_existing_form", clear_on_submit=True):
+        col_a1, col_a2 = st.columns(2)
+        with col_a1:
+            assign_product = st.selectbox("Chọn sản phẩm từ hệ thống *", options=master_product_names if master_product_names else ["Chưa có sản phẩm"])
+            assign_device = st.selectbox("Chọn máy cần gán *", options=device_ids if device_ids else ["Chưa có máy"])
+        with col_a2:
+            assign_slot = st.selectbox("Chọn ô hiển thị (1-10) *", options=list(range(1, 11)), key="assign_slot")
+            assign_qty = st.number_input("Số lượng nạp", min_value=1, step=1, value=10, key="assign_qty")
+            
+        submitted_assign = st.form_submit_button("🔗 Tiến Hành Gán", type="primary")
+        
+        if submitted_assign:
+            if assign_product == "Chưa có sản phẩm" or assign_device == "Chưa có máy":
+                st.error("❌ Hệ thống cần có ít nhất 1 sản phẩm và 1 máy để thực hiện gán!")
+            else:
+                # KIỂM TRA TRÙNG Ô VÀ TRÙNG SẢN PHẨM TRONG MÁY
+                has_error = False
+                error_msg = ""
+                
+                inv_resp = get_device_inventory(assign_device)
+                if inv_resp.get("success"):
+                    for item in inv_resp.get("inventory", []):
+                        # Lỗi 1: Ô được chọn đã bị chiếm dụng (bởi bất kỳ sản phẩm nào)
+                        if item.get("slot_number") == assign_slot:
+                            has_error = True
+                            error_msg = f"Ô số **{assign_slot}** trên máy {assign_device} đang chứa sản phẩm **'{item.get('item_name')}'**."
+                            break
+                        
+                        # Lỗi 2: Sản phẩm này đã tồn tại sẵn trong máy (nằm ở một ô khác)
+                        if item.get("item_name") == assign_product:
+                            has_error = True
+                            error_msg = f"Sản phẩm **'{assign_product}'** đã có sẵn trên máy {assign_device} (hiện đang nằm ở Ô số {item.get('slot_number')}). Mỗi máy chỉ chứa 1 vị trí cho mặt hàng này!"
+                            break
+                
+                if has_error:
+                    st.error(f"❌ **Không thể gán:** {error_msg} Vui lòng chọn ô/sản phẩm khác.")
+                else:
+                    with st.spinner(f"Đang gán {assign_product} vào máy {assign_device}..."):
+                        # Gọi API update_device_inventory 
+                        res_assign = update_device_inventory(assign_device, assign_product, assign_qty, assign_slot)
+                        if res_assign.get("success"):
+                            st.success(f"✅ Đã gán thành công **{assign_product}** vào Ô {assign_slot} của máy **{assign_device}** với số lượng {assign_qty}!")
+                            st.cache_data.clear()
+                            time.sleep(1.5)
+                            st.rerun() # Refresh lại trang để cập nhật UI ngay lập tức
+                        else:
+                            st.error(f"❌ Lỗi: {res_assign.get('message')}")
 
 # ════════════════════════════════════════════════════════
 # TAB 3: CHỈNH SỬA, SET SỐ LƯỢNG & XÓA SẢN PHẨM
@@ -277,32 +338,59 @@ with tab_edit:
                         if res_info.get("success"):
                             st.success("✅ Đã lưu toàn bộ thay đổi thành công!")
                             st.cache_data.clear()
+                            time.sleep(1.5)
                             st.rerun()
                         else:
                             st.error(f"❌ {res_info.get('message')}")
 
             st.markdown("---")
-            # --- KHU VỰC XÓA SẢN PHẨM ---
-            st.subheader("🗑️ Xóa Sản Phẩm Này")
-            st.warning("⚠️ **Nguy hiểm:** Việc xóa sản phẩm sẽ xóa sản phẩm này khỏi Master Data và tất cả các máy. Hành động này không thể hoàn tác.")
+            # --- KHU VỰC GỠ/XÓA SẢN PHẨM ---
+            st.subheader("🗑️ Gỡ / Xóa Sản Phẩm Này")
             
-            if st.button("🗑️ Xác nhận xóa sản phẩm", type="primary", use_container_width=True):
-                st.session_state["confirm_delete_btn"] = sel
+            delete_mode = st.radio(
+                "Tùy chọn phạm vi xóa:",
+                ["Gỡ khỏi MỘT MÁY CỤ THỂ", "Xóa VĨNH VIỄN khỏi toàn hệ thống"]
+            )
+            
+            # TRƯỜNG HỢP 1: XÓA Ở 1 MÁY
+            if delete_mode == "Gỡ khỏi MỘT MÁY CỤ THỂ":
+                st.info("💡 Sản phẩm sẽ biến mất khỏi ô trên máy được chọn, nhưng vẫn còn trong Master Data để gán lại sau.")
+                del_device = st.selectbox("Chọn máy để gỡ:", device_ids if device_ids else ["Chưa có máy"], key="del_dev_select")
                 
-            if st.session_state.get("confirm_delete_btn") == sel:
-                st.error(f"Bạn có chắc chắn muốn xóa vĩnh viễn **{sel}**?")
-                c1, c2 = st.columns(2)
-                with c1:
-                    if st.button("✅ Vâng, Xóa ngay!"):
-                        result = delete_product(sel)
+                if st.button(f"🗑️ Xác nhận gỡ khỏi {del_device}", type="primary"):
+                    with st.spinner(f"Đang gỡ khỏi {del_device}..."):
+                        result = remove_device_inventory(del_device, sel)
                         if result.get("success"):
-                            st.success(f"✅ Đã xóa thành công: {sel}")
-                            st.session_state.pop("confirm_delete_btn", None)
+                            st.success(f"✅ Đã gỡ thành công {sel} khỏi {del_device}")
                             st.cache_data.clear()
+                            time.sleep(1.5)
                             st.rerun()
                         else:
                             st.error(f"❌ Lỗi: {result.get('message')}")
-                with c2:
-                    if st.button("❌ Hủy bỏ"):
-                        st.session_state.pop("confirm_delete_btn", None)
-                        st.rerun()
+
+            # TRƯỜNG HỢP 2: XÓA TOÀN HỆ THỐNG
+            elif delete_mode == "Xóa VĨNH VIỄN khỏi toàn hệ thống":
+                st.warning("⚠️ **Nguy hiểm:** Xóa khỏi Master Data và tất cả các máy. Hành động này không thể hoàn tác.")
+                
+                if st.button("🗑️ Xác nhận xóa vĩnh viễn", type="primary"):
+                    st.session_state["confirm_delete_btn"] = sel
+                    
+                if st.session_state.get("confirm_delete_btn") == sel:
+                    st.error(f"Bạn có chắc chắn muốn xóa vĩnh viễn **{sel}**?")
+                    c1, c2 = st.columns(2)
+                    with c1:
+                        if st.button("✅ Vâng, Xóa ngay!"):
+                            result = delete_product(sel)
+                            if result.get("success"):
+                                st.success(f"✅ Đã xóa thành công: {sel}")
+                                st.session_state.pop("confirm_delete_btn", None)
+                                st.cache_data.clear()
+                                time.sleep(1.5)
+                                st.rerun()
+                            else:
+                                st.error(f"❌ Lỗi: {result.get('message')}")
+                    with c2:
+                        if st.button("❌ Hủy bỏ"):
+                            st.session_state.pop("confirm_delete_btn", None)
+                            time.sleep(1.5)
+                            st.rerun()

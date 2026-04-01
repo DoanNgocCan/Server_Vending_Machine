@@ -47,8 +47,8 @@ logs/
 .docker/
 
 # Images
-static/images/*
-!static/images/.gitkeep
+server/static/images/*
+!server/static/images/.gitkeep
 
 # Data
 postgres_data/
