@@ -44,14 +44,19 @@ Copy this token — you'll need it in the next step.
 In the tunnel configuration:
 1. Click **Public Hostname** tab
 2. Click **Add a public hostname**
-3. Fill in:
+3. Fill in for API Server:
    - **Subdomain**: e.g., `api`
    - **Domain**: your domain (e.g., `yourdomain.com`)
    - **Service Type**: `HTTP`
-   - **URL**: `web:5000`
+   - **URL**: `server:5000`
 4. Click **Save hostname**
 
-Your API will be accessible at `https://api.yourdomain.com`.
+5. Repeat step 2-4 for Dashboard (Streamlit):
+   - **Subdomain**: e.g., `dashboard`
+   - **Service Type**: `HTTP`
+   - **URL**: `dashboard:8501`
+
+Your API will be accessible at `https://api.yourdomain.com` and Dashboard at `https://dashboard.yourdomain.com`.
 
 ### 6. Add the Token to `.env`
 
@@ -66,9 +71,9 @@ Edit `.env`:
 CLOUDFLARE_TUNNEL_TOKEN=eyJhIjoiMWVjZmM3...
 ```
 
-### 7. Uncomment the Tunnel Service in `docker-compose.yml`
+### 7. Configure docker-compose.yml Tunnel Service
 
-Edit `docker-compose.yml` and uncomment the `tunnel` service block:
+Edit `docker-compose.yml` — the `tunnel` service should have:
 
 ```yaml
   tunnel:
@@ -79,8 +84,15 @@ Edit `docker-compose.yml` and uncomment the `tunnel` service block:
     environment:
       TUNNEL_TOKEN: ${CLOUDFLARE_TUNNEL_TOKEN}
     depends_on:
-      - web
+      - server
+    networks:
+      - vending_network
 ```
+
+**Important**:
+- `depends_on: - server` (NOT `web`) — this is the actual service name
+- `networks: - vending_network` — allows tunnel to reach other containers via DNS
+
 
 ### 8. Start Everything
 
@@ -111,5 +123,5 @@ Visit `https://api.yourdomain.com/` — you should see:
 ## Troubleshooting
 
 - **Tunnel not connecting**: Check `docker logs vending-tunnel` for errors.
-- **502 Bad Gateway**: Make sure the `web` service is healthy (`docker ps`).
+- **502 Bad Gateway**: Make sure the `server` service is healthy (`docker ps`). Also verify your URL is `server:5000` and `dashboard:8501`, NOT `localhost` or `web`.
 - **Token invalid**: Regenerate the token in the Cloudflare dashboard.

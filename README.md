@@ -5,21 +5,21 @@ A central server for managing vending machines, built with Flask + PostgreSQL, c
 ## Architecture
 
 ```
-┌─────────────────┐     ┌──────────────────┐     ┌────────────────────┐
-│  Vending Machine │────▶│  Flask API        │────▶│  PostgreSQL DB     │
-│  (ESP32 client)  │     │  (port 5000)      │     │  (port 5432)       │
-└─────────────────┘     └──────────────────┘     └────────────────────┘
+┌─────────────────┐      ┌──────────────────┐      ┌────────────────────┐
+│  Vending Machine│────▶│  Flask API        │────▶│  PostgreSQL DB     │
+│  (RPi5 client)  │      │  (port 5000)     │      │  (port 5432)       │
+└─────────────────┘      └──────────────────┘      └────────────────────┘
                                   │
                          ┌────────▼─────────┐
-                         │  Streamlit        │
-                         │  Dashboard        │
-                         │  (port 8501)      │
+                         │  Streamlit       │
+                         │  Dashboard       │
+                         │  (port 8501)     │
                          └──────────────────┘
                                   │
                          ┌────────▼─────────┐
-                         │  Cloudflare       │
-                         │  Tunnel           │
-                         │  (optional)       │
+                         │  Cloudflare      │
+                         │  Tunnel          │
+                         │  (optional)      │
                          └──────────────────┘
 ```
 

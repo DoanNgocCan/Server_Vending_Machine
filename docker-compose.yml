@@ -2,7 +2,7 @@ services:
   postgres:
     image: postgres:16-alpine
     container_name: vending_postgres
-    env_file: .env          # ← Load .env file
+    env_file: .env          
     environment:
       POSTGRES_USER: ${POSTGRES_USER}
       POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
@@ -25,7 +25,7 @@ services:
   mosquitto:
     image: eclipse-mosquitto
     container_name: vending_mosquitto
-    env_file: .env          # ← Load .env file
+    env_file: .env          
     ports:
       - "1883:1883"
       - "9001:9001"
@@ -49,7 +49,7 @@ services:
       context: ./server
       dockerfile: Dockerfile
     container_name: vending_server
-    env_file: .env          # ← Load .env file
+    env_file: .env          
     environment:
       FLASK_ENV: ${FLASK_ENV}
       FLASK_APP: ${FLASK_APP}
@@ -83,7 +83,7 @@ services:
       context: ./dashboard
       dockerfile: Dockerfile
     container_name: vending_dashboard
-    env_file: .env          # ← Load .env file
+    env_file: .env          
     environment:
       DASHBOARD_SERVER_URL: ${DASHBOARD_SERVER_URL}
       API_URL: ${API_URL}
@@ -107,6 +107,17 @@ services:
       timeout: 10s
       retries: 3
     restart: unless-stopped
+  tunnel:
+    image: cloudflare/cloudflared:latest
+    container_name: vending-tunnel
+    restart: always
+    command: tunnel run
+    environment:
+      TUNNEL_TOKEN: ${CLOUDFLARE_TUNNEL_TOKEN}
+    depends_on:
+      - server
+    networks:
+      - vending_network
   #pgadmin:
     #image: dpage/pgadmin4:latest
     #container_name: vending-pgadmin
