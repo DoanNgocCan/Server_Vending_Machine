@@ -27,7 +27,8 @@ with col_reload:
     if st.button("🔄 Làm mới dữ liệu"):
         st.rerun()
 with col_search:
-    search_q = st.text_input("🔍 Tìm kiếm khách hàng", placeholder="Nhập tên, số điện thoại hoặc mã khách hàng...")
+    # CẬP NHẬT: Thêm chữ Email vào gợi ý tìm kiếm
+    search_q = st.text_input("🔍 Tìm kiếm khách hàng", placeholder="Nhập tên, số điện thoại, email hoặc mã KH...")
 
 # ════════════════════════════════════════════════════════
 # PHÂN TRANG & GỌI API KHÁCH HÀNG
@@ -41,6 +42,7 @@ with st.spinner("Đang tải danh sách khách hàng..."):
 
 # Lưu trữ danh sách user để dùng cho phần lịch sử giao dịch
 df_users = pd.DataFrame()
+selected_rows = []
 
 # ════════════════════════════════════════════════════════
 # XỬ LÝ VÀ HIỂN THỊ DỮ LIỆU KHÁCH HÀNG
@@ -58,12 +60,13 @@ else:
     else:
         df_users = pd.DataFrame(users)
         
+        # CẬP NHẬT: Thay đổi 'birthday' thành 'email'
         rename_cols = {
             "user_id": "Mã KH",
             "full_name": "Họ và Tên",
             "phone_number": "Số điện thoại",
+            "email": "Email",              
             "points": "Điểm tích lũy",
-            "birthday": "Ngày sinh",
             "created_at": "Ngày đăng ký"
         }
         
@@ -91,12 +94,13 @@ else:
         
         total_fetched = len(users)
         st.caption(f"Đang hiển thị {total_fetched} khách hàng (Trang {page}). Click vào một dòng để xem lịch sử mua hàng.")
+        
+        # CẬP NHẬT: Chỉ gán selected_rows khi event đã thực sự được tạo
+        selected_rows = event.selection.rows
 
 # ════════════════════════════════════════════════════════
 # XEM LỊCH SỬ GIAO DỊCH DỰA VÀO DÒNG ĐƯỢC CHỌN
 # ════════════════════════════════════════════════════════
-selected_rows = event.selection.rows
-
 if selected_rows and not df_users.empty:
     st.markdown("---")
     

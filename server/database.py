@@ -38,7 +38,7 @@ def create_tables():
                 user_id TEXT PRIMARY KEY,
                 full_name TEXT NOT NULL,
                 phone_number TEXT UNIQUE NOT NULL,
-                birthday TEXT,
+                email TEXT UNIQUE NOT NULL,    -- Email thay cho ngày sinh
                 password TEXT NOT NULL,
                 points INTEGER DEFAULT 0,
                 status TEXT DEFAULT 'active',
@@ -46,6 +46,7 @@ def create_tables():
                 updated_at TEXT NOT NULL
             )
         """)
+        # KHÔNG CẦN đoạn migration kiểm tra ALTER TABLE email ở đây nữa
 
         # 2. Bảng inventory (MASTER DATA)
         cursor.execute("""

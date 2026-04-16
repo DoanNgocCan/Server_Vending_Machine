@@ -20,15 +20,15 @@ def listUsers():
         conn = getDatabaseConnection()
         try:
             cursor = conn.cursor()
-            base_query = "SELECT user_id, full_name, phone_number, points, birthday, status, created_at FROM users"
+            base_query = "SELECT user_id, full_name, phone_number, points, email, status, created_at FROM users"
             count_query = "SELECT COUNT(*) AS total FROM users"
             params = []
 
             if search:
-                where_clause = " WHERE (full_name LIKE %s OR phone_number LIKE %s)"
+                where_clause = " WHERE (full_name LIKE %s OR phone_number LIKE %s OR email LIKE %s)"
                 base_query += where_clause
                 count_query += where_clause
-                params.extend([f"%{search}%", f"%{search}%"])
+                params.extend([f"%{search}%", f"%{search}%", f"%{search}%"])
 
             cursor.execute(count_query, params)
             total_records = cursor.fetchone()[0]
@@ -50,9 +50,14 @@ def listUsers():
 def registerUser():
     try:
         data = request.get_json()
-        required = ['user_id', 'full_name', 'phone_number', 'birthday', 'password']
+        # Thay 'birthday' bằng 'email' và thêm 'confirm_password'
+        required = ['user_id', 'full_name', 'phone_number', 'email', 'password', 'confirm_password']
         if not all(field in data for field in required):
             return jsonify({'success': False, 'message': 'Missing fields'}), 400
+
+        # Kiểm tra xác nhận mật khẩu
+        if data['password'] != data['confirm_password']:
+            return jsonify({'success': False, 'message': 'Passwords do not match'}), 400
 
         user_id = data['user_id']
         now_iso = datetime.now(timezone.utc).isoformat()
@@ -60,17 +65,19 @@ def registerUser():
         conn = getDatabaseConnection()
         try:
             cursor = conn.cursor()
-            cursor.execute("SELECT 1 FROM users WHERE phone_number = %s", (data['phone_number'],))
+            # Kiểm tra trùng SĐT hoặc Email
+            cursor.execute("SELECT 1 FROM users WHERE phone_number = %s OR email = %s", (data['phone_number'], data['email']))
             if cursor.fetchone():
-                return jsonify({'success': False, 'message': 'Phone exists'}), 409
+                return jsonify({'success': False, 'message': 'Phone or Email already exists'}), 409
+            
             cursor.execute("SELECT 1 FROM users WHERE user_id = %s", (user_id,))
             if cursor.fetchone():
                 return jsonify({'success': False, 'message': 'ID exists'}), 409
 
             cursor.execute("""
-                INSERT INTO users (user_id, full_name, phone_number, birthday, password, status, created_at, updated_at)
+                INSERT INTO users (user_id, full_name, phone_number, email, password, status, created_at, updated_at)
                 VALUES (%s, %s, %s, %s, %s, 'active', %s, %s)
-            """, (user_id, data['full_name'], data['phone_number'], data['birthday'], data['password'], now_iso, now_iso))
+            """, (user_id, data['full_name'], data['phone_number'], data['email'], data['password'], now_iso, now_iso))
             conn.commit()
         except Exception:
             conn.rollback()
@@ -87,20 +94,22 @@ def registerUser():
 @user_bp.route('/api/user/login', methods=['POST'])
 def loginUser():
     data = request.get_json()
-    phone = data.get('phone_number')
+    # Nhận chung 1 trường login_id (có thể là email hoặc sđt)
+    login_id = data.get('login_id') 
     password = data.get('password')
     try:
         conn = getDatabaseConnection()
         try:
             cursor = conn.cursor()
-            cursor.execute("SELECT * FROM users WHERE phone_number = %s", (phone,))
+            # Tìm kiếm theo SĐT hoặc Email
+            cursor.execute("SELECT * FROM users WHERE phone_number = %s OR email = %s", (login_id, login_id))
             user = dict_fetchone(cursor)
             if user and user['password'] == password:
                 return jsonify({'success': True, 'user': user})
         finally:
             conn.close()
-    except Exception:
-        pass
+    except Exception as e:
+        logger.error(f"Login error: {e}")
     return jsonify({'success': False, 'message': 'Invalid credentials'}), 401
 
 @user_bp.route('/api/user/<string:user_id>', methods=['GET'])
@@ -121,10 +130,6 @@ def get_user_by_id(user_id):
 
 @user_bp.route('/api/user/sync_profile', methods=['POST'])
 def sync_user_profile():
-    """
-    API nhận thông tin user từ Client gửi lên để đồng bộ.
-    CHỈ cập nhật thông tin cá nhân, KHÔNG ghi đè điểm.
-    """
     try:
         data = request.get_json()
         user_id = data.get('user_id')
@@ -133,7 +138,7 @@ def sync_user_profile():
 
         full_name = data.get('full_name')
         phone = data.get('phone_number')
-        dob = data.get('birthday')
+        email = data.get('email')  # Đã đổi từ dob sang email
         pwd = data.get('password', '123456')
         created_at = data.get('created_at', datetime.now(timezone.utc).isoformat())
         now_iso = datetime.now(timezone.utc).isoformat()
@@ -142,15 +147,15 @@ def sync_user_profile():
         try:
             cursor = conn.cursor()
             cursor.execute("""
-                INSERT INTO users (user_id, full_name, phone_number, birthday, password, points, status, created_at, updated_at)
+                INSERT INTO users (user_id, full_name, phone_number, email, password, points, status, created_at, updated_at)
                 VALUES (%s, %s, %s, %s, %s, 0, 'active', %s, %s)
                 ON CONFLICT(user_id) DO UPDATE SET
                     full_name = EXCLUDED.full_name,
                     phone_number = EXCLUDED.phone_number,
-                    birthday = EXCLUDED.birthday,
+                    email = EXCLUDED.email,    -- Sửa birthday thành email ở đây
                     password = EXCLUDED.password,
                     updated_at = EXCLUDED.updated_at
-            """, (user_id, full_name, phone, dob, pwd, created_at, now_iso))
+            """, (user_id, full_name, phone, email, pwd, created_at, now_iso))
             conn.commit()
         except Exception:
             conn.rollback()
