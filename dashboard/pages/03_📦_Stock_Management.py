@@ -101,10 +101,10 @@ if not df_inv.empty:
                     "device_id": st.column_config.TextColumn("Mã Máy"),
                     "slot_number": st.column_config.NumberColumn("Số Ô"),
                     "item_name": st.column_config.TextColumn("Sản phẩm"),
-                    "units_left": st.column_config.NumberColumn("Tồn kho (Số lượng)"),
+                    "units_left": st.column_config.NumberColumn("Tồn kho"),
                     "trạng_thái": st.column_config.TextColumn("Cảnh báo"),
-                    "price": st.column_config.NumberColumn("Giá gốc (₫)", format="%,.0f"),
-                    "custom_price": st.column_config.NumberColumn("Giá riêng (₫)", format="%,.0f"),
+                    "price": st.column_config.NumberColumn("Giá Bán Chung (₫)", format="%,.0f"), # <-- Đổi từ "Giá gốc" thành "Giá Bán Chung"
+                    "custom_price": st.column_config.NumberColumn("Giá Máy Này (₫)", format="%,.0f"), # <-- Làm rõ ràng hơn
                     "last_updated": st.column_config.TextColumn("Cập nhật lần cuối"),
                 },
             )

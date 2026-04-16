@@ -197,7 +197,7 @@ def admin_add_stock():
             finally:
                 conn2.close()
 
-            get_publisher().publish_product_update(item_name, price, units_left)
+            get_publisher().publish_product_update(device_id, item_name, price, units_left)
         except Exception as mqtt_err:
             logger.warning("MQTT publish after add_stock failed: %s", mqtt_err)
 
@@ -298,9 +298,6 @@ def getProducts():
 
 @product_bp.route('/api/admin/update_product', methods=['POST'])
 def admin_update_product():
-    """
-    API dành cho Dashboard Streamlit cập nhật thông tin sản phẩm.
-    """
     try:
         data = request.get_json()
         old_name = data.get('old_name')
@@ -310,12 +307,13 @@ def admin_update_product():
         description = data.get('description')
         add_stock = data.get('add_stock', 0)
         device_id = data.get('device_id')
+        custom_price = int(float(data.get('custom_price'))) if data.get('custom_price') is not None else None # THÊM DÒNG NÀY
 
         conn = getDatabaseConnection()
         try:
             cursor = conn.cursor()
 
-            # 1. Xử lý ĐỔI TÊN
+            # 1. Xử lý ĐỔI TÊN (Giữ nguyên code của bạn)
             if old_name and new_name and old_name != new_name:
                 cursor.execute("SELECT 1 FROM inventory WHERE item_name = %s", (new_name,))
                 if cursor.fetchone():
@@ -328,16 +326,16 @@ def admin_update_product():
             else:
                 target_name = old_name
 
-            # 2. Xử lý ĐỔI GIÁ (Master Data)
+            # 2. Xử lý ĐỔI GIÁ CHUNG (Master Data) (Giữ nguyên)
             updates = []
             params = []
             if new_price is not None:
                 updates.append("price = %s")
                 params.append(new_price)
-            if cost_price is not None:            # <-- BỔ SUNG
+            if cost_price is not None:
                 updates.append("cost_price = %s")
                 params.append(cost_price)
-            if description is not None:           # <-- BỔ SUNG
+            if description is not None:
                 updates.append("description = %s")
                 params.append(description)
 
@@ -345,6 +343,14 @@ def admin_update_product():
                 query = f"UPDATE inventory SET {', '.join(updates)} WHERE item_name = %s"
                 params.append(target_name)
                 cursor.execute(query, tuple(params))
+
+            # 2.5 Xử lý GIÁ BÁN RIÊNG (Custom Price cho Device) - THÊM ĐOẠN NÀY
+            if device_id and device_id != "Chưa có máy" and custom_price is not None:
+                cursor.execute("SELECT 1 FROM device_pricing WHERE device_id = %s AND item_name = %s", (device_id, target_name))
+                if cursor.fetchone():
+                    cursor.execute("UPDATE device_pricing SET custom_price = %s WHERE device_id = %s AND item_name = %s", (custom_price, device_id, target_name))
+                else:
+                    cursor.execute("INSERT INTO device_pricing (device_id, item_name, custom_price) VALUES (%s, %s, %s)", (device_id, target_name, custom_price))
 
             # 3. Xử lý CẬP NHẬT KHO (Device Inventory)
             if device_id and add_stock != 0:

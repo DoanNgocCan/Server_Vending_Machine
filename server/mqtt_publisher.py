@@ -119,19 +119,20 @@ class MQTTPublisher:
     # Public API
     # ------------------------------------------------------------------
 
-    def publish_product_update(self, product_id: str, price: float, units_left: int) -> bool:
+    def publish_product_update(self, device_id: str, product_id: str, price: float, units_left: int) -> bool:
         """
         Publish a hot-update (price or stock change) for a product.
 
         Topic : vending_machine/product/update
-        Payload: {"product_id": "...", "price": 12000, "units_left": 45}
+        Payload: {"device_id": "...", "product_id": "...", "price": 12000, "units_left": 45}
         """
         payload = {
+            "device_id": device_id,  # Bây giờ biến này mới có giá trị
             "product_id": product_id,
             "price":      price,
             "units_left": units_left,
         }
-        logger.info("Publishing product update for '%s'", product_id)
+        logger.info(f"Publishing product update for '{product_id}' (Target: {device_id})")
         return self._publish(TOPIC_PRODUCT_UPDATE, payload)
 
     def publish_new_product(self, product_id: str) -> bool:
@@ -165,6 +166,7 @@ class MQTTPublisher:
     def publish_hot_update(self, device_id, old_name, new_name, price, units_left):
         """Bắn tín hiệu thay đổi Tên, Giá, Số lượng cho một máy cụ thể"""
         payload = {
+            "device_id": device_id, 
             "old_name": old_name,
             "new_name": new_name,
             "price": price,
@@ -172,7 +174,7 @@ class MQTTPublisher:
         }
         # Sử dụng biến TOPIC_PRODUCT_UPDATE ("vending_machine/product/update") 
         # và hàm _publish có sẵn để có retry và in log đầy đủ
-        logger.info(f"Publishing HOT UPDATE for '{old_name}' -> '{new_name}'")
+        logger.info(f"Publishing HOT UPDATE for '{old_name}' -> '{new_name}' (Target: {device_id})")
         return self._publish(TOPIC_PRODUCT_UPDATE, payload)
 
     def disconnect(self):
