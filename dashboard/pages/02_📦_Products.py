@@ -317,7 +317,16 @@ with tab_edit:
                 with col_e2:
                     if edit_device == "Chỉ sửa Master Data (Không chọn máy)":
                         st.info("💡 Đang chỉnh sửa Master Data. Hãy chọn một máy cụ thể ở thanh phía trên để sửa Tồn Kho & Giá Riêng.")
-                        # Gán giá trị rác để pass qua hàm, nhưng sẽ không được lưu xuống db
+                        
+                        # ---> THÊM UI CHO LỆNH LỚN <---
+                        st.markdown("---")
+                        st.markdown("**Tùy chọn nâng cao:**")
+                        force_override = st.checkbox(
+                            "🚨 Bắt buộc áp dụng giá này cho TOÀN BỘ MÁY (Xóa bỏ các mức giá riêng đã cài đặt trước đó)",
+                            value=False,
+                            help="Nếu chọn, tất cả máy đang bán sản phẩm này với giá khác sẽ bị ép đồng bộ về mức giá Master mới."
+                        )
+                        
                         new_qty = 0 
                         new_slot = 1
                         new_custom_price = new_price
@@ -326,6 +335,7 @@ with tab_edit:
                         new_qty = st.number_input("Số lượng tồn kho hiện tại", value=int(current_qty), min_value=0, step=1)
                         new_slot = st.selectbox("Vị trí ô (Slot)", options=list(range(1, 11)), index=int(current_slot)-1)
                         new_custom_price = st.number_input("Giá bán RIÊNG cho máy này (₫)", value=float(current_custom_price), step=1000.0)
+                        force_override = False # Không áp dụng nếu đang sửa máy cụ thể
                 
                 new_desc = st.text_area("Mô tả sản phẩm", value=cur.get("description", "") or "")
                 
@@ -341,19 +351,19 @@ with tab_edit:
                                 break
                     
                     if not slot_conflict:
-                        with st.spinner("Đang lưu..."):
-                            # CHỈ gửi giá Master nếu nó KHÁC với giá hiện tại trong DB
+                        with st.spinner("Đang lưu và đồng bộ hệ thống..."):
                             master_price_to_send = new_price if new_price != float(cur.get("price", 0)) else None
                             master_cost_to_send = new_cost if new_cost != float(cur.get("cost_price", 0)) else None
                             
                             res_master = update_product(
                                 old_name=sel,
                                 new_name=new_name if new_name != sel else None,
-                                price=master_price_to_send,    # Thay đổi ở đây
-                                cost_price=master_cost_to_send, # Thay đổi ở đây
+                                price=master_price_to_send,    
+                                cost_price=master_cost_to_send, 
                                 description=new_desc,
                                 device_id=edit_device if edit_device != "Chỉ sửa Master Data (Không chọn máy)" else None,
-                                custom_price=new_custom_price
+                                custom_price=new_custom_price,
+                                force_price_override=force_override # ---> TRUYỀN CỜ VÀO API CLIENT <---
                             )
                             
                             if res_master.get("success"):

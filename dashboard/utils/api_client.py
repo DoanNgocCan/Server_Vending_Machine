@@ -112,7 +112,7 @@ def create_product(item_name, price, cost_price=0, description=""):
     })
 
 
-def update_product(old_name, new_name=None, price=None, cost_price=None, description=None, add_stock=0, device_id=None, custom_price=None):
+def update_product(old_name, new_name=None, price=None, cost_price=None, description=None, add_stock=0, device_id=None, custom_price=None, force_price_override=False): # <- Thêm tham số cuối
     """POST /api/admin/update_product"""
     payload = {"old_name": old_name}
     if new_name:
@@ -127,10 +127,12 @@ def update_product(old_name, new_name=None, price=None, cost_price=None, descrip
         payload["add_stock"] = add_stock
     if device_id:
         payload["device_id"] = device_id
-    
-    # --- THÊM ĐOẠN NÀY ĐỂ TRUYỀN GIÁ RIÊNG ---
     if custom_price is not None:
         payload["custom_price"] = custom_price
+        
+    # --- THÊM DÒNG NÀY ĐỂ TRUYỀN LỆNH LỚN ---
+    if force_price_override:
+        payload["force_price_override"] = True
         
     return _post("/api/admin/update_product", json=payload)
 

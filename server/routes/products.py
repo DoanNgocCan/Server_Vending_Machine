@@ -307,13 +307,14 @@ def admin_update_product():
         description = data.get('description')
         add_stock = data.get('add_stock', 0)
         device_id = data.get('device_id')
-        custom_price = int(float(data.get('custom_price'))) if data.get('custom_price') is not None else None # THÊM DÒNG NÀY
+        custom_price = int(float(data.get('custom_price'))) if data.get('custom_price') is not None else None
+        force_price_override = data.get('force_price_override', False)
 
         conn = getDatabaseConnection()
         try:
             cursor = conn.cursor()
 
-            # 1. Xử lý ĐỔI TÊN (Giữ nguyên code của bạn)
+            # 1. Xử lý ĐỔI TÊN
             if old_name and new_name and old_name != new_name:
                 cursor.execute("SELECT 1 FROM inventory WHERE item_name = %s", (new_name,))
                 if cursor.fetchone():
@@ -326,7 +327,7 @@ def admin_update_product():
             else:
                 target_name = old_name
 
-            # 2. Xử lý ĐỔI GIÁ CHUNG (Master Data) (Giữ nguyên)
+            # 2. Xử lý ĐỔI GIÁ CHUNG (Master Data)
             updates = []
             params = []
             if new_price is not None:
@@ -343,15 +344,17 @@ def admin_update_product():
                 query = f"UPDATE inventory SET {', '.join(updates)} WHERE item_name = %s"
                 params.append(target_name)
                 cursor.execute(query, tuple(params))
+            if force_price_override:
+                cursor.execute("DELETE FROM device_pricing WHERE item_name = %s", (target_name,))
 
-            # 2.5 Xử lý GIÁ BÁN RIÊNG (Custom Price cho Device) - THÊM ĐOẠN NÀY
-            if device_id and device_id != "Chưa có máy" and custom_price is not None:
+            # 2.5 Xử lý GIÁ BÁN RIÊNG (Custom Price cho Device)
+            # Chỉ thực hiện nếu không dùng lệnh override (nếu dùng override thì không set riêng nữa)
+            elif device_id and device_id != "Chưa có máy" and custom_price is not None:
                 cursor.execute("SELECT 1 FROM device_pricing WHERE device_id = %s AND item_name = %s", (device_id, target_name))
                 if cursor.fetchone():
                     cursor.execute("UPDATE device_pricing SET custom_price = %s WHERE device_id = %s AND item_name = %s", (custom_price, device_id, target_name))
                 else:
                     cursor.execute("INSERT INTO device_pricing (device_id, item_name, custom_price) VALUES (%s, %s, %s)", (device_id, target_name, custom_price))
-
             # 3. Xử lý CẬP NHẬT KHO (Device Inventory)
             if device_id and add_stock != 0:
                 cursor.execute("SELECT units_left FROM device_inventory WHERE device_id = %s AND item_name = %s", (device_id, target_name))
