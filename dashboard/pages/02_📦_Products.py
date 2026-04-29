@@ -175,10 +175,6 @@ with tab_create:
                         st.error(f"❌ {result.get('message', 'Tạo thất bại')}")
 
     st.markdown("---")
-    
-    # ----------------------------------------------------------------------
-    # TÍNH NĂNG MỚI: GÁN SẢN PHẨM ĐÃ CÓ VÀO MÁY
-    # ----------------------------------------------------------------------
     st.subheader("🔗 Gán Sản Phẩm Đã Có Vào Máy")
     st.info("Sử dụng phần này để đưa một sản phẩm đã có trong Master Data (nhưng bị gỡ ra hoặc chưa từng gán) vào một ô trống cụ thể trên máy.")
     
@@ -252,182 +248,209 @@ with tab_edit:
         df2 = pd.DataFrame(products2)
         product_names2 = df2["item_name"].tolist()
         
-        # --- ĐẢO NGƯỢC LOGIC: CHỌN MÁY TRƯỚC, CHỌN SẢN PHẨM SAU ---
-        col_select_1, col_select_2, col_img = st.columns([1.5, 1.5, 1])
+        # --- CHIA 2 CỘT CHO GIAO DIỆN CHỌN ---
+        col_select_1, col_select_2 = st.columns([1, 1])
         
         with col_select_1:
             # Lựa chọn 1: Chọn phạm vi (Máy hoặc Toàn hệ thống)
             OPTIONS_DEV = ["Chỉ sửa Master Data (Không chọn máy)"] + (device_ids if device_ids else [])
             edit_device = st.selectbox("1. Chọn phạm vi chỉnh sửa:", OPTIONS_DEV, key="edit_select_dev")
         
+        # Khởi tạo biến lưu trữ dữ liệu kho
+        inv_check = {}
+        available_products = []
+        PLACEHOLDER = "- Chọn Sản Phẩm -" 
+
         with col_select_2:
             # Lựa chọn 2: Lọc sản phẩm theo Máy đã chọn
             if edit_device == "Chỉ sửa Master Data (Không chọn máy)":
-                available_products = product_names2
+                available_products = [PLACEHOLDER] + product_names2
             else:
-                with st.spinner("Đang kiểm tra kho máy..."):
+                with st.spinner(f"Đang tải danh sách sản phẩm của {edit_device}..."):
                     inv_check = get_device_inventory(edit_device)
-                    available_products = [item["item_name"] for item in inv_check.get("inventory", [])] if inv_check.get("success") else []
+                    if inv_check.get("success"):
+                        products_in_device = [item["item_name"] for item in inv_check.get("inventory", [])]
+                        if products_in_device:
+                            available_products = [PLACEHOLDER] + products_in_device
             
             if not available_products:
-                st.warning("⚠️ Máy này hiện đang trống!")
+                if edit_device != "Chỉ sửa Master Data (Không chọn máy)":
+                    st.warning(f"⚠️ Máy {edit_device} hiện đang trống!")
+                else:
+                    st.warning("⚠️ Hệ thống chưa có sản phẩm!")
                 sel = None
             else:
-                sel = st.selectbox("2. Chọn sản phẩm:", available_products, key="edit_select_prod")
+                sel = st.selectbox(
+                    f"2. Chọn sản phẩm ({'Hệ thống' if edit_device == 'Chỉ sửa Master Data (Không chọn máy)' else edit_device}):", 
+                    available_products, 
+                    key=f"edit_select_prod_{edit_device}"
+                )
 
-        # CHỈ HIỂN THỊ FORM NẾU CÓ SẢN PHẨM ĐƯỢC CHỌN
-        if sel:
+        # CHỈ HIỂN THỊ FORM NẾU CÓ SẢN PHẨM ĐƯỢC CHỌN VÀ KHÁC PLACEHOLDER
+        if sel and sel != PLACEHOLDER:
             # 2. LOGIC LẤY GIÁ TRỊ HIỆN TẠI TỪ DATABASE
-            cur = df2[df2["item_name"] == sel].iloc[0]
-            
-            # Khởi tạo giá trị mặc định từ Master Data
-            current_qty = 0
-            current_slot = 1
-            current_custom_price = float(cur.get("price", 0))
-
-            # Nếu chọn máy cụ thể, tận dụng luôn data inv_check vừa tải ở trên
-            if edit_device != "Chỉ sửa Master Data (Không chọn máy)":
-                for item in inv_check.get("inventory", []):
-                    if item.get("item_name") == sel:
-                        current_qty = item.get("units_left", 0)
-                        current_slot = item.get("slot_number") or 1
-                        if item.get("custom_price") is not None:
-                            current_custom_price = float(item.get("custom_price"))
-                        break
-
-            with col_img:
-                if cur.get("image_url"):
-                    img_url = get_image_url(cur["image_url"])
-                    if img_url:
-                        st.image(img_url, width=100, caption="Ảnh hiện tại")
-
-            st.divider()
-
-            # 3. FORM NHẬP LIỆU
-            with st.form("edit_actual_form"):
-                st.markdown(f"### 📝 Chỉnh sửa: **{sel}**")
+            cur_rows = df2[df2["item_name"] == sel]
+            if not cur_rows.empty:
+                cur = cur_rows.iloc[0]
                 
-                col_e1, col_e2 = st.columns(2)
-                with col_e1:
-                    st.markdown("**Thông tin chung (Master Data)**")
-                    new_name = st.text_input("Tên sản phẩm mới (Để trống nếu không đổi)", value=sel)
-                    new_price = st.number_input("Giá bán CHUNG hệ thống (₫)", value=float(cur.get("price", 0)), step=1000.0)
-                    new_cost = st.number_input("Giá vốn (₫)", value=float(cur.get("cost_price", 0)), step=1000.0)
-                
-                with col_e2:
+                # Khởi tạo giá trị mặc định từ Master Data
+                current_qty = 0
+                current_slot = 1
+                current_custom_price = float(cur.get("price", 0))
+
+                # Nếu chọn máy cụ thể, lấy data từ inv_check
+                if edit_device != "Chỉ sửa Master Data (Không chọn máy)" and inv_check.get("success"):
+                    for item in inv_check.get("inventory", []):
+                        if item.get("item_name") == sel:
+                            current_qty = item.get("units_left", 0)
+                            current_slot = item.get("slot_number") or 1
+                            if item.get("custom_price") is not None:
+                                current_custom_price = float(item.get("custom_price"))
+                            break
+
+                st.divider()
+
+                # 3. FORM NHẬP LIỆU (ĐÃ LÀM GỌN UI)
+                with st.form("edit_actual_form"):
+                    st.markdown(f"### 📝 Chỉnh sửa: **{sel}**")
+                    
                     if edit_device == "Chỉ sửa Master Data (Không chọn máy)":
-                        st.info("💡 Đang chỉnh sửa Master Data. Hãy chọn một máy cụ thể ở thanh phía trên để sửa Tồn Kho & Giá Riêng.")
+                        # ----------------------------------------------------
+                        # GIAO DIỆN KHI CHỈNH SỬA MASTER DATA
+                        # ----------------------------------------------------
+                        st.info("💡 Đang chỉnh sửa Master Data (Áp dụng toàn hệ thống)")
+                        new_name = st.text_input("Tên sản phẩm mới (Để trống nếu không đổi)", value=sel)
                         
-                        # ---> THÊM UI CHO LỆNH LỚN <---
+                        col_m1, col_m2 = st.columns(2)
+                        with col_m1:
+                            new_price = st.number_input("Giá bán CHUNG hệ thống (₫)", value=float(cur.get("price", 0)), step=1000.0)
+                        with col_m2:
+                            new_cost = st.number_input("Giá vốn (₫)", value=float(cur.get("cost_price", 0)), step=1000.0)
+                            
                         st.markdown("---")
-                        st.markdown("**Tùy chọn nâng cao:**")
                         force_override = st.checkbox(
-                            "🚨 Bắt buộc áp dụng giá này cho TOÀN BỘ MÁY (Xóa bỏ các mức giá riêng đã cài đặt trước đó)",
+                            "🚨 Bắt buộc áp dụng giá này cho TOÀN BỘ MÁY",
                             value=False,
-                            help="Nếu chọn, tất cả máy đang bán sản phẩm này với giá khác sẽ bị ép đồng bộ về mức giá Master mới."
+                            help="Tất cả máy đang bán sản phẩm này với giá khác sẽ bị ép đồng bộ về mức giá Master mới."
                         )
                         
+                        # Ẩn các biến của máy
                         new_qty = 0 
                         new_slot = 1
                         new_custom_price = new_price
+
                     else:
-                        st.markdown(f"**Cấu hình riêng cho máy: {edit_device}**")
-                        new_qty = st.number_input("Số lượng tồn kho hiện tại", value=int(current_qty), min_value=0, step=1)
-                        new_slot = st.selectbox("Vị trí ô (Slot)", options=list(range(1, 11)), index=int(current_slot)-1)
-                        new_custom_price = st.number_input("Giá bán RIÊNG cho máy này (₫)", value=float(current_custom_price), step=1000.0)
-                        force_override = False # Không áp dụng nếu đang sửa máy cụ thể
-                
-                new_desc = st.text_area("Mô tả sản phẩm", value=cur.get("description", "") or "")
-                
-                save = st.form_submit_button("💾 Lưu Thay Đổi", type="primary", use_container_width=True)
-                
-                if save:
-                    slot_conflict = False
-                    if edit_device != "Chỉ sửa Master Data (Không chọn máy)":
-                        for item in inv_check.get("inventory", []):
-                            if item.get("slot_number") == new_slot and item.get("item_name") != sel:
-                                slot_conflict = True
-                                st.error(f"❌ Ô số {new_slot} đã có sản phẩm '{item.get('item_name')}' chiếm giữ!")
-                                break
-                    
-                    if not slot_conflict:
-                        with st.spinner("Đang lưu và đồng bộ hệ thống..."):
-                            master_price_to_send = new_price if new_price != float(cur.get("price", 0)) else None
-                            master_cost_to_send = new_cost if new_cost != float(cur.get("cost_price", 0)) else None
+                        # ----------------------------------------------------
+                        # GIAO DIỆN KHI CHỈNH SỬA MÁY CỤ THỂ
+                        # ----------------------------------------------------
+                        st.info(f"💡 Đang cấu hình riêng cho máy: **{edit_device}**")
+                        
+                        # Chỉ giữ lại trường tên và các thuộc tính riêng của máy
+                        new_name = st.text_input("Tên sản phẩm (Lưu ý: Đổi tên ở đây sẽ áp dụng toàn hệ thống)", value=sel)
+                        
+                        col_d1, col_d2 = st.columns(2)
+                        with col_d1:
+                            new_slot = st.selectbox("Vị trí ô (Slot)", options=list(range(1, 11)), index=int(current_slot)-1)
+                            new_qty = st.number_input("Số lượng tồn kho hiện tại", value=int(current_qty), min_value=0, step=1)
+                        with col_d2:
+                            new_custom_price = st.number_input("Giá bán RIÊNG cho máy này (₫)", value=float(current_custom_price), step=1000.0)
                             
-                            res_master = update_product(
-                                old_name=sel,
-                                new_name=new_name if new_name != sel else None,
-                                price=master_price_to_send,    
-                                cost_price=master_cost_to_send, 
-                                description=new_desc,
-                                device_id=edit_device if edit_device != "Chỉ sửa Master Data (Không chọn máy)" else None,
-                                custom_price=new_custom_price,
-                                force_price_override=force_override # ---> TRUYỀN CỜ VÀO API CLIENT <---
-                            )
-                            
-                            if res_master.get("success"):
-                                if edit_device != "Chỉ sửa Master Data (Không chọn máy)":
-                                    target_name = new_name if new_name != sel else sel
-                                    update_device_inventory(edit_device, target_name, new_qty, new_slot)
-
-                                st.success("✅ Cập nhật dữ liệu thành công!")
-                                time.sleep(1)
-                                st.rerun()
-                            else:
-                                st.error(f"❌ Lỗi: {res_master.get('message')}")
-
-            st.markdown("---")
-            # --- KHU VỰC GỠ/XÓA SẢN PHẨM ---
-            st.subheader("🗑️ Gỡ / Xóa Sản Phẩm Này")
-            
-            delete_mode = st.radio(
-                "Tùy chọn phạm vi xóa:",
-                ["Gỡ khỏi MỘT MÁY CỤ THỂ", "Xóa VĨNH VIỄN khỏi toàn hệ thống"]
-            )
-            
-            if delete_mode == "Gỡ khỏi MỘT MÁY CỤ THỂ":
-                st.info("💡 Sản phẩm sẽ biến mất khỏi ô trên máy được chọn, nhưng vẫn còn trong Master Data để gán lại sau.")
-                # Nếu ở trên đã chọn máy thì mặc định lấy máy đó, không thì cho chọn
-                default_del_index = 0
-                if edit_device != "Chỉ sửa Master Data (Không chọn máy)" and edit_device in device_ids:
-                    default_del_index = device_ids.index(edit_device)
+                        # Ẩn các biến của Master Data (giữ nguyên data cũ để không bị update sai)
+                        new_price = float(cur.get("price", 0))
+                        new_cost = float(cur.get("cost_price", 0))
+                        force_override = False 
                     
-                del_device = st.selectbox("Chọn máy để gỡ:", device_ids if device_ids else ["Chưa có máy"], index=default_del_index, key="del_dev_select")
-                
-                if st.button(f"🗑️ Xác nhận gỡ {sel} khỏi {del_device}", type="primary"):
-                    with st.spinner(f"Đang gỡ khỏi {del_device}..."):
-                        result = remove_device_inventory(del_device, sel)
-                        if result.get("success"):
-                            st.success(f"✅ Đã gỡ thành công {sel} khỏi {del_device}")
-                            st.cache_data.clear()
-                            time.sleep(1.5)
-                            st.rerun()
-                        else:
-                            st.error(f"❌ Lỗi: {result.get('message')}")
-
-            elif delete_mode == "Xóa VĨNH VIỄN khỏi toàn hệ thống":
-                st.warning("⚠️ **Nguy hiểm:** Xóa khỏi Master Data và tất cả các máy. Hành động này không thể hoàn tác.")
-                
-                if st.button(f"🗑️ Xác nhận xóa vĩnh viễn {sel}", type="primary"):
-                    st.session_state["confirm_delete_btn"] = sel
+                    new_desc = st.text_area("Mô tả sản phẩm", value=cur.get("description", "") or "")
                     
-                if st.session_state.get("confirm_delete_btn") == sel:
-                    st.error(f"Bạn có chắc chắn muốn xóa vĩnh viễn **{sel}**?")
-                    c1, c2 = st.columns(2)
-                    with c1:
-                        if st.button("✅ Vâng, Xóa ngay!"):
-                            result = delete_product(sel)
+                    save = st.form_submit_button("💾 Lưu Thay Đổi", type="primary", use_container_width=True)
+                    
+                    if save:
+                        slot_conflict = False
+                        if edit_device != "Chỉ sửa Master Data (Không chọn máy)" and inv_check.get("success"):
+                            for item in inv_check.get("inventory", []):
+                                if item.get("slot_number") == new_slot and item.get("item_name") != sel:
+                                    slot_conflict = True
+                                    st.error(f"❌ Ô số {new_slot} đã có sản phẩm '{item.get('item_name')}' chiếm giữ!")
+                                    break
+                        
+                        if not slot_conflict:
+                            with st.spinner("Đang lưu và đồng bộ hệ thống..."):
+                                # Nếu giá trị không đổi thì trả về None để API không đụng tới
+                                master_price_to_send = new_price if new_price != float(cur.get("price", 0)) else None
+                                master_cost_to_send = new_cost if new_cost != float(cur.get("cost_price", 0)) else None
+                                
+                                res_master = update_product(
+                                    old_name=sel,
+                                    new_name=new_name if new_name != sel else None,
+                                    price=master_price_to_send,    
+                                    cost_price=master_cost_to_send, 
+                                    description=new_desc,
+                                    device_id=edit_device if edit_device != "Chỉ sửa Master Data (Không chọn máy)" else None,
+                                    custom_price=new_custom_price,
+                                    force_price_override=force_override
+                                )
+                                
+                                if res_master.get("success"):
+                                    if edit_device != "Chỉ sửa Master Data (Không chọn máy)":
+                                        target_name = new_name if new_name != sel else sel
+                                        update_device_inventory(edit_device, target_name, new_qty, new_slot)
+
+                                    st.success("✅ Cập nhật dữ liệu thành công!")
+                                    time.sleep(1)
+                                    st.rerun()
+                                else:
+                                    st.error(f"❌ Lỗi: {res_master.get('message')}")
+
+                st.markdown("---")
+                # --- KHU VỰC GỠ/XÓA SẢN PHẨM ---
+                st.subheader("🗑️ Gỡ / Xóa Sản Phẩm Này")
+                
+                delete_mode = st.radio(
+                    "Tùy chọn phạm vi xóa:",
+                    ["Gỡ khỏi MỘT MÁY CỤ THỂ", "Xóa VĨNH VIỄN khỏi toàn hệ thống"]
+                )
+                
+                if delete_mode == "Gỡ khỏi MỘT MÁY CỤ THỂ":
+                    st.info("💡 Sản phẩm sẽ biến mất khỏi ô trên máy được chọn, nhưng vẫn còn trong Master Data để gán lại sau.")
+                    default_del_index = 0
+                    if edit_device != "Chỉ sửa Master Data (Không chọn máy)" and edit_device in device_ids:
+                        default_del_index = device_ids.index(edit_device)
+                        
+                    del_device = st.selectbox("Chọn máy để gỡ:", device_ids if device_ids else ["Chưa có máy"], index=default_del_index, key="del_dev_select")
+                    
+                    if st.button(f"🗑️ Xác nhận gỡ {sel} khỏi {del_device}", type="primary"):
+                        with st.spinner(f"Đang gỡ khỏi {del_device}..."):
+                            result = remove_device_inventory(del_device, sel)
                             if result.get("success"):
-                                st.success(f"✅ Đã xóa thành công: {sel}")
-                                st.session_state.pop("confirm_delete_btn", None)
+                                st.success(f"✅ Đã gỡ thành công {sel} khỏi {del_device}")
                                 st.cache_data.clear()
                                 time.sleep(1.5)
                                 st.rerun()
                             else:
                                 st.error(f"❌ Lỗi: {result.get('message')}")
-                    with c2:
-                        if st.button("❌ Hủy bỏ"):
-                            st.session_state.pop("confirm_delete_btn", None)
-                            time.sleep(1.5)
-                            st.rerun()
+
+                elif delete_mode == "Xóa VĨNH VIỄN khỏi toàn hệ thống":
+                    st.warning("⚠️ **Nguy hiểm:** Xóa khỏi Master Data và tất cả các máy. Hành động này không thể hoàn tác.")
+                    
+                    if st.button(f"🗑️ Xác nhận xóa vĩnh viễn {sel}", type="primary"):
+                        st.session_state["confirm_delete_btn"] = sel
+                        
+                    if st.session_state.get("confirm_delete_btn") == sel:
+                        st.error(f"Bạn có chắc chắn muốn xóa vĩnh viễn **{sel}**?")
+                        c1, c2 = st.columns(2)
+                        with c1:
+                            if st.button("✅ Vâng, Xóa ngay!"):
+                                result = delete_product(sel)
+                                if result.get("success"):
+                                    st.success(f"✅ Đã xóa thành công: {sel}")
+                                    st.session_state.pop("confirm_delete_btn", None)
+                                    st.cache_data.clear()
+                                    time.sleep(1.5)
+                                    st.rerun()
+                                else:
+                                    st.error(f"❌ Lỗi: {result.get('message')}")
+                        with c2:
+                            if st.button("❌ Hủy bỏ"):
+                                st.session_state.pop("confirm_delete_btn", None)
+                                time.sleep(1.5)
+                                st.rerun()

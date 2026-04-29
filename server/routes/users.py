@@ -20,7 +20,7 @@ def listUsers():
         conn = getDatabaseConnection()
         try:
             cursor = conn.cursor()
-            base_query = "SELECT user_id, full_name, phone_number, points, email, status, created_at FROM users"
+            base_query = "SELECT user_id, full_name, phone_number, points, email, status, created_at, password FROM users"
             count_query = "SELECT COUNT(*) AS total FROM users"
             params = []
 
@@ -58,7 +58,6 @@ def registerUser():
         # Kiểm tra xác nhận mật khẩu
         if data['password'] != data['confirm_password']:
             return jsonify({'success': False, 'message': 'Passwords do not match'}), 400
-
         user_id = data['user_id']
         now_iso = datetime.now(timezone.utc).isoformat()
 
@@ -104,8 +103,10 @@ def loginUser():
             # Tìm kiếm theo SĐT hoặc Email
             cursor.execute("SELECT * FROM users WHERE phone_number = %s OR email = %s", (login_id, login_id))
             user = dict_fetchone(cursor)
-            if user and user['password'] == password:
+
+            if user and user['password'] == str(password):
                 return jsonify({'success': True, 'user': user})
+
         finally:
             conn.close()
     except Exception as e:
@@ -118,7 +119,7 @@ def get_user_by_id(user_id):
         conn = getDatabaseConnection()
         try:
             cursor = conn.cursor()
-            cursor.execute("SELECT user_id, full_name, phone_number, points FROM users WHERE user_id = %s", (user_id,))
+            cursor.execute("SELECT user_id, full_name, phone_number, email, points, password FROM users WHERE user_id = %s", (user_id,))
             user = dict_fetchone(cursor)
             if user:
                 return jsonify({'success': True, 'user': user})
