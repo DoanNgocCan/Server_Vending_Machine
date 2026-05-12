@@ -1,13 +1,14 @@
 from flask import Blueprint, request, jsonify
 from datetime import datetime, timezone
 import logging
+import json
+from collections import Counter
 
 # Import các hàm dùng chung từ database và utils
 from database import getDatabaseConnection, dict_fetchone, dict_fetchall
 from utils import logSystemEvent
 
 logger = logging.getLogger(__name__)
-
 user_bp = Blueprint('users', __name__)
 
 @user_bp.route('/api/users', methods=['GET'])
@@ -128,7 +129,74 @@ def get_user_by_id(user_id):
             conn.close()
     except Exception:
         return jsonify({'success': False}), 500
+@user_bp.route('/api/users/<string:user_id>/recommendation', methods=['GET'])
+def get_user_recommendation(user_id):
+    try:
+        conn = getDatabaseConnection()
+        try:
+            cursor = conn.cursor()
+            
+            # BƯỚC 1: Lấy lịch sử mua hàng, sắp xếp từ MỚI NHẤT đến CŨ NHẤT (QUAN TRỌNG)
+            cursor.execute("SELECT items FROM transactions WHERE user_id = %s ORDER BY created_at DESC", (user_id,))
+            rows = cursor.fetchall()
+            
+            if not rows:
+                return jsonify({"status": "empty", "message": "Chưa có lịch sử mua hàng"}), 200
 
+            product_counts = Counter()
+            recent_order_list = [] # Mảng lưu vết để giải quyết hòa điểm
+
+            # BƯỚC 2: Thống kê số lượng và ghi nhận độ "tươi mới" của sản phẩm
+            for row in rows:
+                try:
+                    items_list = json.loads(row[0])
+                    for item in items_list:
+                        p_name = item.get('product_name') or item.get('name') or item.get('item_name')
+                        qty = item.get('quantity', 1)
+                        if p_name:
+                            # Cộng dồn số lượng mua
+                            product_counts[p_name] += qty
+                            
+                            # Món nào gặp trước (từ đơn mới nhất) sẽ được chốt vị trí đầu trong danh sách này
+                            if p_name not in recent_order_list:
+                                recent_order_list.append(p_name)
+                except Exception as parse_err:
+                    logger.warning(f"Lỗi phân tích JSON: {parse_err}")
+                    continue
+            
+            if not product_counts:
+                return jsonify({"status": "empty", "message": "Không tìm thấy sản phẩm hợp lệ"}), 200
+
+            # BƯỚC 3: XỬ LÝ HÒA ĐIỂM (TIE-BREAKER)
+            # Tìm mức số lượng cao nhất (VD: Mua nhiều nhất là 1)
+            max_qty = max(product_counts.values())
+            
+            # Lấy ra TẤT CẢ các món cùng đạt mốc max_qty này
+            top_candidates = [p_name for p_name, count in product_counts.items() if count == max_qty]
+
+            # Quét mảng recent_order_list từ trên xuống. Món nào trong nhóm đồng hạng xuất hiện đầu tiên -> Chọn luôn!
+            top_product_name = next(p for p in recent_order_list if p in top_candidates)
+
+            # BƯỚC 4: Lấy dữ liệu sản phẩm để gửi về giao diện (UI)
+            query = """
+                SELECT id, item_name AS name, price, image_url 
+                FROM inventory 
+                WHERE item_name = %s
+            """
+            cursor.execute(query, (top_product_name,))
+            recommended_product = dict_fetchone(cursor)
+            
+        finally:
+            conn.close()
+            
+        if recommended_product:
+            return jsonify({"status": "success", "data": recommended_product}), 200
+            
+        return jsonify({"status": "empty", "message": "Sản phẩm không còn trong hệ thống"}), 200
+
+    except Exception as e:
+        logger.error(f"Error Recommendation API: {e}")
+        return jsonify({"status": "error", "message": str(e)}), 500
 @user_bp.route('/api/user/sync_profile', methods=['POST'])
 def sync_user_profile():
     try:
