@@ -171,7 +171,7 @@ def update_device_inventory(device_id, item_name, units_left, slot_number):
     """PUT /api/devices/<device_id>/inventory/<item_name>"""
     payload = {
         "units_left": units_left,
-        "slot_number": slot_number  # <-- Đã thêm số ô
+        "slot_number": slot_number  
     }
     # Dùng _put thay vì requests.put để tận dụng Retry và SERVER_URL mặc định
     return _put(f"/api/devices/{device_id}/inventory/{item_name}", json=payload)
@@ -205,7 +205,12 @@ def get_transactions(limit=20, offset=0, device_id=None, user_id=None):
 def get_inventory_stats():
     """GET /api/inventory/stats"""
     return _get("/api/inventory/stats")
-
+def get_advanced_analytics(device_id=None):
+    """Lấy dữ liệu phân tích, có thể lọc theo device_id"""
+    path = "/api/admin/analytics"
+    if device_id:
+        path += f"?device_id={device_id}"
+    return _get(path)
 
 # ──────────────────────────────────────────────
 # IMAGES

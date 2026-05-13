@@ -149,4 +149,86 @@ def get_inventory_stats():
 
         return jsonify({'success': True, 'stats': result})
     except Exception as e:
+        logger.error(f"Inventory Stats Error: {e}")
         return jsonify({'success': False}), 500
+
+@trans_bp.route('/api/admin/analytics', methods=['GET'])
+def get_advanced_analytics():
+    """API: Thống kê và Phân tích Dữ liệu nâng cao cho Dashboard"""
+    device_id = request.args.get('device_id') # Có thể lọc theo máy nếu cần
+    try:
+        conn = getDatabaseConnection()
+        cursor = conn.cursor()
+        
+        # Điều kiện WHERE linh hoạt
+        where_clause = "WHERE payment_status = 'completed'"
+        params = []
+        if device_id:
+            where_clause += " AND device_id = %s"
+            params.append(device_id)
+
+        # 1. Tổng doanh thu (Có lọc theo máy)
+        cursor.execute(f"SELECT COALESCE(SUM(total_amount), 0) FROM transactions {where_clause}", params)
+        total_revenue = cursor.fetchone()[0]
+
+        # 2. Top sản phẩm bán chạy tổng hợp
+        cursor.execute(f"""
+            SELECT 
+                COALESCE(elem->>'product_name', elem->>'name', elem->>'item_name') AS item_name,
+                SUM((elem->>'quantity')::int) AS units_sold
+            FROM transactions, json_array_elements(items::json) AS elem
+            {where_clause}
+            GROUP BY 1 ORDER BY units_sold DESC LIMIT 5
+        """, params)
+        top_products = dict_fetchall(cursor)
+
+        # 3. Sản phẩm "ế" (Bán <= 3 cái) tại từng máy
+        cursor.execute(f"""
+            SELECT 
+                device_id,
+                COALESCE(elem->>'product_name', elem->>'name', elem->>'item_name') AS item_name,
+                SUM((elem->>'quantity')::int) AS units_sold
+            FROM transactions, json_array_elements(items::json) AS elem
+            {where_clause}
+            GROUP BY 1, 2 HAVING SUM((elem->>'quantity')::int) <= 3
+            ORDER BY units_sold ASC
+        """, params)
+        underperforming = dict_fetchall(cursor)
+
+        # 4. Doanh thu theo từng máy (Luôn lấy toàn hệ thống để vẽ chart bar)
+        cursor.execute("""
+            SELECT device_id, SUM(total_amount) as revenue 
+            FROM transactions WHERE payment_status = 'completed' 
+            GROUP BY device_id ORDER BY revenue DESC
+        """)
+        revenue_by_device = dict_fetchall(cursor)
+
+        # 5. [THÊM MỚI] Top sản phẩm bán chạy CHIA THEO TỪNG MÁY
+        cursor.execute("""
+            SELECT 
+                device_id,
+                COALESCE(elem->>'product_name', elem->>'name', elem->>'item_name') AS item_name,
+                SUM((elem->>'quantity')::int) AS units_sold
+            FROM transactions, json_array_elements(items::json) AS elem
+            WHERE payment_status = 'completed'
+            GROUP BY 1, 2
+            ORDER BY device_id, units_sold DESC
+        """)
+        top_products_by_device = dict_fetchall(cursor)
+
+        conn.close()
+        
+        # Trả về đầy đủ dữ liệu cho Streamlit
+        return jsonify({
+            'success': True,
+            'data': {
+                'total_revenue': total_revenue,
+                'top_products': top_products,
+                'revenue_by_device': revenue_by_device,
+                'underperforming_products': underperforming,
+                'top_products_by_device': top_products_by_device # Key quan trọng cho giao diện mới
+            }
+        })
+    except Exception as e:
+        logger.error(f"Analytics API Error: {e}")
+        return jsonify({'success': False, 'message': str(e)}), 500
